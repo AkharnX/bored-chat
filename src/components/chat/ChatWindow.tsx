@@ -1,0 +1,338 @@
+'use client';
+
+import { useState, useRef, useEffect } from 'react';
+import type { Conversation, Message } from '@/types';
+import { api } from '@/lib/api';
+
+interface ChatWindowProps {
+  conversation: Conversation | null;
+  onSendMessage: (content: string, type: 'text' | 'image' | 'gif') => void;
+  sendTyping?: (conversationId: string, isTyping: boolean) => void;
+  onNewMessage?: (callback: (msg: Message) => void) => void;
+  onTyping?: (callback: (userId: string, isTyping: boolean) => void) => void;
+}
+
+export default function ChatWindow({ conversation, onSendMessage, sendTyping, onNewMessage, onTyping }: ChatWindowProps) {
+  const [message, setMessage] = useState('');
+  const [messages, setMessages] = useState<Message[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [uploading, setUploading] = useState(false);
+  const [isSelfTyping, setIsSelfTyping] = useState(false);
+  const [otherIsTyping, setOtherIsTyping] = useState(false);
+  const [typingTimeout, setTypingTimeout] = useState<NodeJS.Timeout | null>(null);
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (conversation) {
+      loadMessages();
+      // Réinitialiser le message lors du changement de conversation
+      setMessage('');
+    }
+  }, [conversation?.id]);
+
+  // Scroll automatique quand les messages changent
+  useEffect(() => {
+    scrollToBottom();
+  }, [messages]);
+
+  // Écouter les nouveaux messages via WebSocket
+  useEffect(() => {
+    if (onNewMessage && conversation) {
+      onNewMessage((msg: Message) => {
+        // Ajouter seulement si c'est pour cette conversation
+        if (msg.conversation_id === conversation.id) {
+          setMessages((prev) => {
+            // Éviter les doublons
+            if (prev.some(m => m.id === msg.id)) return prev;
+            return [...prev, msg];
+          });
+        }
+      });
+    }
+  }, [onNewMessage, conversation?.id]);
+
+  // Écouter les événements "est en train d'écrire"
+  useEffect(() => {
+    if (onTyping && conversation) {
+      onTyping((userId: string, isTyping: boolean) => {
+        // Vérifier si c'est l'autre personne de cette conversation
+        const otherUser = conversation.participants?.find(
+          p => p.user_id !== api.getCurrentUserId()
+        );
+        
+        if (otherUser && userId === otherUser.user_id) {
+          setOtherIsTyping(isTyping);
+        }
+      });
+    }
+  }, [onTyping, conversation?.id]);
+
+  const loadMessages = async () => {
+    if (!conversation) return;
+    
+    setLoading(true);
+    try {
+      const data = await api.getMessages(conversation.id);
+      // Trier par date : anciens en haut, nouveaux en bas
+      const sortedMessages = data.sort((a, b) => 
+        new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
+      );
+      setMessages(sortedMessages);
+      scrollToBottom();
+    } catch (error) {
+      console.error('Failed to load messages:', error);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const scrollToBottom = () => {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  };
+
+  const handleSend = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!message.trim()) return;
+
+    const messageToSend = message;
+    setMessage(''); // Vider immédiatement pour UX fluide
+
+    // Arrêter l'indicateur "est en train d'écrire"
+    if (sendTyping && conversation) {
+      sendTyping(conversation.id, false);
+    }
+
+    try {
+      await onSendMessage(messageToSend, 'text');
+      // Recharger les messages après envoi
+      await loadMessages();
+    } catch (error) {
+      console.error('Failed to send message:', error);
+      setMessage(messageToSend); // Restaurer le message en cas d'erreur
+    }
+  };
+
+  const handleTyping = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const value = e.target.value;
+    setMessage(value);
+
+    if (!sendTyping || !conversation) return;
+
+    // Envoyer "est en train d'écrire" si pas déjà envoyé
+    if (!isSelfTyping && value.length > 0) {
+      setIsSelfTyping(true);
+      sendTyping(conversation.id, true);
+    }
+
+    // Réinitialiser le timer
+    if (typingTimeout) {
+      clearTimeout(typingTimeout);
+    }
+
+    // Arrêter d'écrire après 2 secondes d'inactivité
+    const timeout = setTimeout(() => {
+      setIsSelfTyping(false);
+      sendTyping(conversation.id, false);
+    }, 2000);
+
+    setTypingTimeout(timeout);
+  };
+
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file || !conversation) return;
+
+    // Vérifier le type de fichier
+    if (!file.type.startsWith('image/')) {
+      alert('❌ Seules les images sont supportées pour le moment');
+      return;
+    }
+
+    // Vérifier la taille (max 5MB)
+    if (file.size > 5 * 1024 * 1024) {
+      alert('❌ L\'image est trop grande (max 5MB)');
+      return;
+    }
+
+    setUploading(true);
+    try {
+      await api.uploadMedia(file, conversation.id);
+      await loadMessages();
+      // Reset input
+      if (fileInputRef.current) {
+        fileInputRef.current.value = '';
+      }
+    } catch (error) {
+      console.error('Failed to upload image:', error);
+      alert('❌ Erreur lors de l\'envoi de l\'image');
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  if (!conversation) {
+    return (
+      <div className="flex-1 flex items-center justify-center bg-gradient-to-br from-orange-50 to-amber-50">
+        <div className="text-center">
+          <div className="text-6xl mb-4">💬</div>
+          <h3 className="text-2xl font-bold text-gray-800 mb-2">Bored Chat</h3>
+          <p className="text-gray-600 font-light">
+            Sélectionne une conversation ou ajoute un ami pour commencer à discuter
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  const otherParticipant = conversation.participants?.find(
+    p => p.user_id !== api.getCurrentUserId()
+  );
+
+  return (
+    <div className="flex-1 flex flex-col bg-white h-full max-h-screen overflow-hidden">
+      {/* Header */}
+      <div className="bg-white border-b border-orange-100 px-4 md:px-6 py-3 md:py-4 shadow-sm flex-shrink-0">
+        <div className="flex items-center gap-3">
+          <div className="w-10 h-10 rounded-full bg-gradient-to-br from-orange-400 to-amber-400 flex items-center justify-center text-white font-semibold">
+            {otherParticipant?.user?.username?.[0]?.toUpperCase() || '?'}
+          </div>
+          <div>
+            <h2 className="font-semibold text-gray-900">
+              {otherParticipant?.user?.display_name || otherParticipant?.user?.username || 'Unknown'}
+            </h2>
+            <p className="text-sm text-gray-500">
+              {otherParticipant?.user?.status === 'online' ? '🟢 En ligne' : '⚫ Hors ligne'}
+            </p>
+          </div>
+        </div>
+      </div>
+
+      {/* Messages */}
+      <div className="flex-1 overflow-y-auto p-3 md:p-6 space-y-3 md:space-y-4 bg-gradient-to-br from-orange-50/30 to-amber-50/30">
+        {loading ? (
+          <div className="flex justify-center items-center h-full">
+            <div className="text-gray-500">⏳ Chargement des messages...</div>
+          </div>
+        ) : messages.length === 0 ? (
+          <div className="flex justify-center items-center h-full">
+            <div className="text-center text-gray-500 font-light">
+              <div className="text-4xl mb-2">👋</div>
+              <p>Aucun message encore. Dis bonjour !</p>
+            </div>
+          </div>
+        ) : (
+          messages.map((msg) => {
+            const isOwn = msg.sender_id === api.getCurrentUserId();
+            return (
+              <div
+                key={msg.id}
+                className={`flex ${isOwn ? 'justify-end' : 'justify-start'}`}
+              >
+                <div
+                  className={`max-w-[85%] md:max-w-[70%] rounded-2xl ${
+                    msg.message_type === 'text' 
+                      ? 'px-3 md:px-4 py-2' 
+                      : 'overflow-hidden'
+                  } ${
+                    isOwn
+                      ? 'bg-gradient-to-r from-orange-500 to-amber-500 text-white'
+                      : 'bg-white border border-orange-100 text-gray-900'
+                  }`}
+                >
+                  {msg.message_type === 'text' ? (
+                    <p className="break-words">{msg.content}</p>
+                  ) : (
+                    <div>
+                      <img
+                        src={msg.media_url?.startsWith('http') 
+                          ? msg.media_url 
+                          : `${process.env.NEXT_PUBLIC_API_URL?.replace('/api', '') || 'http://localhost:9000'}${msg.media_url}`
+                        }
+                        alt="Image partagée"
+                        className="max-w-full rounded-t-lg"
+                      />
+                      {msg.content && (
+                        <p className="px-3 py-2 break-words">{msg.content}</p>
+                      )}
+                    </div>
+                  )}
+                  <p
+                    className={`text-xs mt-1 ${
+                      msg.message_type === 'text' ? '' : 'px-3 pb-2'
+                    } ${
+                      isOwn ? 'text-orange-100' : 'text-gray-500'
+                    }`}
+                  >
+                    {new Date(msg.created_at).toLocaleTimeString('fr-FR', {
+                      hour: '2-digit',
+                      minute: '2-digit',
+                    })}
+                  </p>
+                </div>
+              </div>
+            );
+          })
+        )}
+        <div ref={messagesEndRef} />
+      </div>
+
+      {/* Indicateur "est en train d'écrire" */}
+      {otherIsTyping && (
+        <div className="px-3 md:px-6 py-2 text-sm text-gray-500 italic flex items-center gap-2">
+          <div className="flex gap-1">
+            <div className="w-2 h-2 bg-orange-400 rounded-full animate-bounce" style={{ animationDelay: '0ms' }}></div>
+            <div className="w-2 h-2 bg-orange-400 rounded-full animate-bounce" style={{ animationDelay: '150ms' }}></div>
+            <div className="w-2 h-2 bg-orange-400 rounded-full animate-bounce" style={{ animationDelay: '300ms' }}></div>
+          </div>
+          <span>{otherParticipant?.user?.display_name || otherParticipant?.user?.username} est en train d'écrire...</span>
+        </div>
+      )}
+
+      {/* Input */}
+      <form onSubmit={handleSend} className="bg-white border-t border-orange-100 px-3 md:px-6 py-3 md:py-4 flex-shrink-0">
+        <div className="flex gap-2 md:gap-3 items-center">
+          {/* Bouton Image */}
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="image/*"
+            onChange={handleFileUpload}
+            className="hidden"
+          />
+          <button
+            type="button"
+            onClick={() => fileInputRef.current?.click()}
+            disabled={uploading}
+            className="p-2 md:p-3 text-orange-500 hover:bg-orange-100 rounded-full transition disabled:opacity-50"
+            title="Envoyer une image"
+          >
+            {uploading ? (
+              <span className="text-xl">⏳</span>
+            ) : (
+              <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
+              </svg>
+            )}
+          </button>
+
+          <input
+            type="text"
+            value={message || ''}
+            onChange={handleTyping}
+            placeholder="Écris ton message..."
+            className="flex-1 px-3 md:px-4 py-2 md:py-3 border border-orange-200 rounded-2xl focus:ring-2 focus:ring-orange-400 focus:border-transparent outline-none transition text-gray-900 placeholder:text-gray-400 text-sm md:text-base"
+          />
+          <button
+            type="submit"
+            disabled={!message.trim()}
+            className="px-4 md:px-6 py-2 md:py-3 bg-gradient-to-r from-orange-500 to-amber-500 text-white font-medium rounded-2xl hover:from-orange-600 hover:to-amber-600 disabled:opacity-50 disabled:cursor-not-allowed transition shadow-lg text-sm md:text-base"
+          >
+            <span className="hidden md:inline">Envoyer 🚀</span>
+            <span className="md:hidden">🚀</span>
+          </button>
+        </div>
+      </form>
+    </div>
+  );
+}
