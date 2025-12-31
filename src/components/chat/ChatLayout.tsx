@@ -107,7 +107,6 @@ export default function ChatLayout() {
       <div className={`w-full md:w-80 bg-white border-r border-gray-200 flex flex-col flex-1 md:flex-initial ${
         selectedConversation ? 'hidden md:flex' : 'flex'
       }`}>
-        {/* Header */}
         <div className="p-2 md:p-4 border-b border-orange-100 bg-gradient-to-r from-orange-50 to-amber-50 flex-shrink-0">
           <div className="flex items-center justify-between mb-2 md:mb-4">
             <div className="flex items-center space-x-2 md:space-x-3">
@@ -122,18 +121,37 @@ export default function ChatLayout() {
                 </div>
               </div>
             </div>
-            <button
-              onClick={logout}
-              className="p-1.5 md:p-2 text-gray-600 hover:text-orange-600 hover:bg-orange-100 rounded-lg transition"
-              title="Déconnexion"
-            >
-              <svg className="w-4 h-4 md:w-5 md:h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
-              </svg>
-            </button>
+            <div className="flex items-center space-x-1">
+              {isSupported && permission !== 'granted' && (
+                <button
+                  onClick={requestPermission}
+                  className="p-1.5 md:p-2 text-gray-600 hover:text-orange-600 hover:bg-orange-100 rounded-lg transition"
+                  title="Activer les notifications"
+                >
+                  <svg className="w-4 h-4 md:w-5 md:h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9" />
+                  </svg>
+                </button>
+              )}
+              {permission === 'granted' && (
+                <span className="p-1.5 md:p-2 text-green-600" title="Notifications activées">
+                  <svg className="w-4 h-4 md:w-5 md:h-5" fill="currentColor" viewBox="0 0 24 24">
+                    <path d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9" />
+                  </svg>
+                </span>
+              )}
+              <button
+                onClick={logout}
+                className="p-1.5 md:p-2 text-gray-600 hover:text-orange-600 hover:bg-orange-100 rounded-lg transition"
+                title="Déconnexion"
+              >
+                <svg className="w-4 h-4 md:w-5 md:h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
+                </svg>
+              </button>
+            </div>
           </div>
 
-          {/* Tab buttons */}
           <div className="flex space-x-1.5 md:space-x-2">
             <button
               onClick={() => setShowFriends(false)}
