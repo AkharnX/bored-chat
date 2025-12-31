@@ -16,6 +16,10 @@ const geistMono = Geist_Mono({
 export const metadata: Metadata = {
   title: "Bored Chat - Secure Private Messaging",
   description: "A secure, private chat application with end-to-end encryption",
+  icons: {
+    icon: "/favicon.ico",
+    apple: "/logo.png",
+  },
 };
 
 export const viewport: Viewport = {

@@ -4,6 +4,7 @@ import { useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '@/contexts/AuthContext';
 import Link from 'next/link';
+import Image from 'next/image';
 
 export default function Home() {
   const router = useRouter();
@@ -19,11 +20,14 @@ export default function Home() {
     <div className="flex min-h-screen items-center justify-center bg-gradient-to-br from-orange-50 via-amber-50 to-yellow-50">
       <main className="flex flex-col items-center justify-center gap-8 px-8 py-16 text-center">
         <div className="space-y-4">
-          <h1 className="text-6xl font-bold text-gray-800">
-            💬 <span className="bg-gradient-to-r from-orange-500 via-amber-500 to-yellow-500 bg-clip-text text-transparent">
-              Bored Chat
-            </span>
-          </h1>
+          <div className="flex items-center justify-center gap-3">
+            <Image src="/logo.png" alt="Bored Chat" width={70} height={70} />
+            <h1 className="text-5xl md:text-6xl font-bold">
+              <span className="bg-gradient-to-r from-orange-500 via-amber-500 to-yellow-500 bg-clip-text text-transparent">
+                Bored Chat
+              </span>
+            </h1>
+          </div>
           <p className="text-lg text-gray-700 max-w-md font-light">
             Un endroit sympa pour discuter avec tes potes. Pas de spam, juste toi et tes amis.
           </p>

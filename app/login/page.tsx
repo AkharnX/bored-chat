@@ -4,6 +4,7 @@ import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '@/contexts/AuthContext';
 import Link from 'next/link';
+import Image from 'next/image';
 
 export default function LoginPage() {
   const [email, setEmail] = useState('');
@@ -32,7 +33,8 @@ export default function LoginPage() {
     <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-orange-50 via-amber-50 to-yellow-50 p-4">
       <div className="bg-white/90 backdrop-blur rounded-3xl shadow-xl p-8 w-full max-w-md border border-orange-100">
         <div className="text-center mb-8">
-          <h1 className="text-4xl font-bold text-gray-800 mb-2">Content de te revoir ! 👋</h1>
+          <Image src="/logo.png" alt="Bored Chat" width={80} height={80} className="mx-auto mb-4" />
+          <h1 className="text-3xl font-bold text-gray-800 mb-2">Content de te revoir ! 👋</h1>
           <p className="text-gray-600 font-light">Entre tes identifiants pour retrouver tes potes</p>
         </div>
 
