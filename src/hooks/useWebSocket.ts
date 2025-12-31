@@ -18,43 +18,29 @@ export function useWebSocket() {
 
   const connect = useCallback(() => {
     const token = api.getToken();
-    if (!token) {
-      console.log('WebSocket: No token, skipping connection');
-      return;
-    }
+    if (!token) return;
 
     try {
       const wsUrl = `${WS_URL}?token=${token}`;
-      console.log('WebSocket: Connecting to', wsUrl);
       const ws = new WebSocket(wsUrl);
 
       ws.onopen = () => {
-        console.log('✅ WebSocket connected');
         setConnected(true);
       };
 
       ws.onmessage = (event) => {
         try {
           const data: WSMessage = JSON.parse(event.data);
-          console.log('🔔 WebSocket message received:', data.type, data);
           
           if (data.type === 'message' && data.data) {
             const newMessage = data.data as Message;
             setMessages((prev) => [...prev, newMessage]);
-            // Appeler le callback si défini (pour rafraîchir ChatWindow)
             if (messageCallbackRef.current) {
-              console.log('📤 Calling message callback for:', newMessage.id);
               messageCallbackRef.current(newMessage);
-            } else {
-              console.warn('⚠️ No message callback registered!');
             }
           } else if (data.type === 'typing') {
-            console.log('🔍 Typing data:', data);
-            // Le sender_id est au niveau racine, pas dans data.data
             const user_id = data.sender_id;
             const is_typing = data.data?.is_typing ?? false;
-            
-            console.log('🔍 Extracted:', { user_id, is_typing });
             
             if (is_typing) {
               setTypingUsers((prev) => ({ ...prev, [user_id]: '' }));
@@ -64,32 +50,23 @@ export function useWebSocket() {
                 return rest;
               });
             }
-            // Appeler le callback de typing
             if (typingCallbackRef.current) {
               typingCallbackRef.current(user_id, is_typing);
             }
           } else if (data.type === 'read') {
-            // Messages lus - notifier pour rafraîchir
             if (readCallbackRef.current && data.conversation_id) {
               readCallbackRef.current(data.conversation_id);
             }
           }
-          
-          // Handle other message types (user_status)
         } catch (error) {
           console.error('WebSocket message parse error:', error);
         }
       };
 
-      ws.onerror = (error) => {
-        console.warn('WebSocket error (normal si pas encore connecté):', error);
-      };
+      ws.onerror = () => {};
 
       ws.onclose = () => {
-        console.log('WebSocket disconnected, reconnecting in 3s...');
         setConnected(false);
-        
-        // Attempt to reconnect after 3 seconds
         reconnectTimeoutRef.current = setTimeout(() => {
           connect();
         }, 3000);
@@ -123,7 +100,7 @@ export function useWebSocket() {
   const sendTyping = useCallback((conversationId: string, isTyping: boolean) => {
     sendMessage({
       type: 'typing',
-      conversation_id: conversationId, // Mettre à la racine pour le backend
+      conversation_id: conversationId,
       data: {
         conversation_id: conversationId,
         is_typing: isTyping,
@@ -132,7 +109,6 @@ export function useWebSocket() {
   }, [sendMessage]);
 
   const onNewMessage = useCallback((callback: (msg: Message) => void) => {
-    console.log('📝 Registering new message callback');
     messageCallbackRef.current = callback;
   }, []);
 

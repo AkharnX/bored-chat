@@ -41,32 +41,24 @@ export default function ChatLayout() {
     }
   }, [isSupported, permission, notificationRequested, requestPermission]);
 
-  // Écouter les nouveaux messages pour les notifications - UNE SEULE FOIS
   useEffect(() => {
     if (!onNewMessage) return;
-
-    console.log('🔔 Setting up ONE-TIME notification listener');
     
     onNewMessage((msg: Message) => {
-      // Utiliser les refs pour éviter les dépendances
       const currentConvId = selectedConversationIdRef.current;
       
-      // Ne pas notifier si on est sur la conversation active
       if (msg.conversation_id === currentConvId) {
         return;
       }
 
-      // Ne pas notifier ses propres messages
       if (msg.sender_id === user?.id) {
         return;
       }
 
-      // Trouver la conversation pour obtenir le nom de l'expéditeur
       const conversation = conversationsRef.current.find(c => c.id === msg.conversation_id);
       const sender = conversation?.participants?.find(p => p.user_id === msg.sender_id)?.user;
       const senderName = sender?.display_name || sender?.username || 'Quelqu\'un';
 
-      // Afficher la notification
       if (permission === 'granted') {
         showNotification(`💬 ${senderName}`, {
           body: msg.message_type === 'text' ? msg.content : '📷 Image',
@@ -75,21 +67,15 @@ export default function ChatLayout() {
         });
       }
 
-      // Jouer un son (optionnel)
       try {
         const audio = new Audio('/notification.mp3');
         audio.volume = 0.5;
-        audio.play().catch(() => {
-          // Ignorer les erreurs de lecture audio
-        });
-      } catch (error) {
-        // Ignorer si le son ne peut pas être joué
-      }
+        audio.play().catch(() => {});
+      } catch {}
       
-      // Mettre à jour la liste des conversations en arrière-plan
       loadConversations();
     });
-  }, [onNewMessage, user?.id, permission, showNotification]); // Plus de conversations ni selectedConversation
+  }, [onNewMessage, user?.id, permission, showNotification]);
 
   const loadConversations = useCallback(async () => {
     try {
@@ -98,9 +84,8 @@ export default function ChatLayout() {
     } catch (error) {
       console.error('Failed to load conversations:', error);
     }
-  }, []); // Pas de dépendances - la fonction ne change jamais
+  }, []);
 
-  // Charger les conversations au montage
   useEffect(() => {
     loadConversations();
   }, [loadConversations]);
@@ -110,7 +95,6 @@ export default function ChatLayout() {
 
     try {
       await api.sendMessage(selectedConversation.id, content, type);
-      // Reload conversations to update last message
       loadConversations();
     } catch (error) {
       console.error('Failed to send message:', error);
@@ -120,7 +104,6 @@ export default function ChatLayout() {
 
   return (
     <div className="h-[100dvh] flex flex-col md:flex-row bg-gray-100 overflow-hidden">
-      {/* Sidebar - Mobile: pleine largeur si pas de conv sélectionnée, Desktop: 320px fixe */}
       <div className={`w-full md:w-80 bg-white border-r border-gray-200 flex flex-col flex-1 md:flex-initial ${
         selectedConversation ? 'hidden md:flex' : 'flex'
       }`}>

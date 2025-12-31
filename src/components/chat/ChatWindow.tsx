@@ -43,56 +43,32 @@ export default function ChatWindow({ conversation, onSendMessage, sendTyping, on
     }
   }, [conversation?.id]);
 
-  // Scroll automatique quand les messages changent
   useEffect(() => {
     scrollToBottom();
   }, [messages]);
 
-  // Écouter les nouveaux messages via WebSocket - N'enregistrer qu'une seule fois
   useEffect(() => {
     if (!onNewMessage) return;
-
-    console.log('🎧 Setting up ONE-TIME message listener');
     
     const handleNewMessage = (msg: Message) => {
-      console.log('📩 New message received in ChatWindow:', msg);
-      // Utiliser le ref pour vérifier la conversation courante
       const currentConvId = currentConversationIdRef.current;
-      if (!currentConvId) {
-        console.log('⏭️ No active conversation');
-        return;
-      }
+      if (!currentConvId) return;
       
-      // Ajouter seulement si c'est pour cette conversation
       if (msg.conversation_id === currentConvId) {
         setMessages((prev) => {
-          // Éviter les doublons
-          if (prev.some(m => m.id === msg.id)) {
-            console.log('⚠️ Duplicate message, skipping:', msg.id);
-            return prev;
-          }
-          console.log('✅ Adding new message to conversation, current count:', prev.length);
+          if (prev.some(m => m.id === msg.id)) return prev;
           return [...prev, msg];
         });
-      } else {
-        console.log('⏭️ Message for different conversation, skipping. Expected:', currentConvId, 'Got:', msg.conversation_id);
       }
     };
 
     onNewMessage(handleNewMessage);
-    
-    return () => {
-      console.log('🧹 Cleaning up ONE-TIME message listener');
-    };
-  }, [onNewMessage]); // Ne dépend QUE de onNewMessage qui est stable
+  }, [onNewMessage]);
 
-  // Écouter les événements "est en train d'écrire"
   useEffect(() => {
     if (!onTyping || !conversation) return;
 
     const handleTyping = (userId: string, isTyping: boolean) => {
-      console.log('⌨️ Typing event:', userId, isTyping);
-      // Vérifier si c'est l'autre personne de cette conversation
       const otherUser = conversation.participants?.find(
         p => p.user_id !== api.getCurrentUserId()
       );
@@ -105,13 +81,10 @@ export default function ChatWindow({ conversation, onSendMessage, sendTyping, on
     onTyping(handleTyping);
   }, [onTyping, conversation?.id]);
 
-  // Écouter les événements "message lu"
   useEffect(() => {
     if (!onRead || !conversation) return;
 
     const handleRead = (conversationId: string) => {
-      console.log('✓✓ Read event:', conversationId);
-      // Si c'est notre conversation, mettre à jour les messages localement
       if (conversationId === conversation.id) {
         setMessages((prev) =>
           prev.map((msg) =>
