@@ -14,10 +14,11 @@ function decodeHtmlEntities(text: string): string {
 }
 
 // Décrypter un message (texte uniquement)
-function decryptMessageContent(msg: Message): Message {
+function decryptMessageContent(msg: Message, currentUserId: string | null): Message {
   if (msg.message_type !== 'text') return msg;
   
-  const decrypted = tryDecrypt(msg.content);
+  const isSender = msg.sender_id === currentUserId;
+  const decrypted = tryDecrypt(msg.content, isSender);
   return { ...msg, content: decrypted };
 }
 
@@ -65,7 +66,8 @@ export default function ChatWindow({ conversation, onSendMessage, sendTyping, on
       
       if (msg.conversation_id === currentConvId) {
         // Déchiffrer le message E2EE
-        const decryptedMsg = decryptMessageContent(msg);
+        const currentUserId = api.getCurrentUserId();
+        const decryptedMsg = decryptMessageContent(msg, currentUserId);
         setMessages((prev) => {
           if (prev.some(m => m.id === msg.id)) return prev;
           return [...prev, decryptedMsg];
@@ -121,7 +123,8 @@ export default function ChatWindow({ conversation, onSendMessage, sendTyping, on
         new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
       );
       // Déchiffrer les messages E2EE
-      const decryptedMessages = sortedMessages.map(decryptMessageContent);
+      const currentUserId = api.getCurrentUserId();
+      const decryptedMessages = sortedMessages.map(msg => decryptMessageContent(msg, currentUserId));
       setMessages(decryptedMessages);
       scrollToBottom();
     } catch (error) {

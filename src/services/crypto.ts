@@ -24,6 +24,11 @@ export interface EncryptedMessage {
   ephemeralPublicKey: string;  // Base64 encoded (for box seal)
 }
 
+export interface DualEncryptedMessage {
+  forRecipient: EncryptedMessage;
+  forSender: EncryptedMessage;
+}
+
 /**
  * Generate a new key pair for E2EE
  */
@@ -160,6 +165,11 @@ export function decryptMessage(encrypted: EncryptedMessage): string | null {
 export function isEncryptedMessage(content: string): boolean {
   try {
     const parsed = JSON.parse(content);
+    // Check for dual encryption format (new)
+    if (parsed.forRecipient && parsed.forSender) {
+      return true;
+    }
+    // Check for single encryption format (legacy)
     return (
       typeof parsed === 'object' &&
       'ciphertext' in parsed &&
@@ -174,13 +184,27 @@ export function isEncryptedMessage(content: string): boolean {
 /**
  * Try to decrypt a message content, return original if not encrypted or decryption fails
  */
-export function tryDecrypt(content: string, fallbackToOriginal: boolean = true): string {
+export function tryDecrypt(content: string, isSender: boolean = false, fallbackToOriginal: boolean = true): string {
   if (!isEncryptedMessage(content)) {
     return content;
   }
 
   try {
-    const encrypted = JSON.parse(content) as EncryptedMessage;
+    const parsed = JSON.parse(content);
+    
+    // New dual encryption format
+    if (parsed.forRecipient && parsed.forSender) {
+      const encryptedVersion = isSender ? parsed.forSender : parsed.forRecipient;
+      const decrypted = decryptMessage(encryptedVersion as EncryptedMessage);
+      
+      if (decrypted !== null) {
+        return decrypted;
+      }
+      return fallbackToOriginal ? '🔒 Message chiffré (impossible à déchiffrer)' : content;
+    }
+    
+    // Legacy single encryption format
+    const encrypted = parsed as EncryptedMessage;
     const decrypted = decryptMessage(encrypted);
     
     if (decrypted !== null) {
@@ -196,11 +220,25 @@ export function tryDecrypt(content: string, fallbackToOriginal: boolean = true):
 
 /**
  * Encrypt a message and return JSON string for storage
+ * Includes both sender and recipient encrypted versions
  */
 export function encryptForStorage(plaintext: string, recipientPublicKey: string): string | null {
-  const encrypted = encryptMessage(plaintext, recipientPublicKey);
-  if (!encrypted) {
+  const myKeyPair = getOrCreateKeyPair();
+  
+  // Encrypt for recipient
+  const forRecipient = encryptMessage(plaintext, recipientPublicKey);
+  if (!forRecipient) {
     return null;
   }
-  return JSON.stringify(encrypted);
+  
+  // Encrypt for sender (so they can re-read their own messages)
+  const forSender = encryptMessage(plaintext, myKeyPair.publicKey);
+  if (!forSender) {
+    return null;
+  }
+  
+  return JSON.stringify({
+    forRecipient,
+    forSender,
+  });
 }
