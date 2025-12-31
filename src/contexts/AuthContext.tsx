@@ -2,6 +2,7 @@
 
 import { createContext, useContext, useState, useEffect, ReactNode } from 'react';
 import { api } from '@/lib/api';
+import { getPublicKey, hasKeys } from '@/services/crypto';
 import type { User } from '@/types';
 
 interface AuthContextType {
@@ -14,6 +15,22 @@ interface AuthContextType {
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
+// Sync public key with server
+async function syncPublicKey(currentUser: User) {
+  if (typeof window === 'undefined') return;
+  
+  const localPublicKey = getPublicKey();
+  
+  // If user doesn't have a public key on server, or it's different, update it
+  if (localPublicKey && (!currentUser.public_key || currentUser.public_key !== localPublicKey)) {
+    try {
+      await api.updatePublicKey(localPublicKey);
+    } catch (error) {
+      console.error('Failed to sync public key:', error);
+    }
+  }
+}
+
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
@@ -22,7 +39,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const token = api.getToken();
     if (token) {
       api.getMe()
-        .then(setUser)
+        .then((currentUser) => {
+          setUser(currentUser);
+          // Sync E2EE public key with server
+          syncPublicKey(currentUser);
+        })
         .catch(() => {
           api.setToken(null);
         })
@@ -42,6 +63,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
     
     setUser(response.user);
+    
+    // Sync E2EE public key with server after login
+    syncPublicKey(response.user);
   };
 
   const register = async (username: string, email: string, password: string, displayName?: string) => {
@@ -54,6 +78,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
     
     setUser(response.user);
+    
+    // Sync E2EE public key with server after registration
+    syncPublicKey(response.user);
   };
 
   const logout = () => {

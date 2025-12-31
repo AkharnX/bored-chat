@@ -3,6 +3,7 @@
 import { useState, useRef, useEffect } from 'react';
 import type { Conversation, Message } from '@/types';
 import { api } from '@/lib/api';
+import { encryptForStorage, tryDecrypt } from '@/services/crypto';
 
 // Fonction pour décoder les entités HTML
 function decodeHtmlEntities(text: string): string {
@@ -10,6 +11,14 @@ function decodeHtmlEntities(text: string): string {
   const textarea = document.createElement('textarea');
   textarea.innerHTML = text;
   return textarea.value;
+}
+
+// Décrypter un message (texte uniquement)
+function decryptMessageContent(msg: Message): Message {
+  if (msg.message_type !== 'text') return msg;
+  
+  const decrypted = tryDecrypt(msg.content);
+  return { ...msg, content: decrypted };
 }
 
 interface ChatWindowProps {
@@ -55,9 +64,11 @@ export default function ChatWindow({ conversation, onSendMessage, sendTyping, on
       if (!currentConvId) return;
       
       if (msg.conversation_id === currentConvId) {
+        // Déchiffrer le message E2EE
+        const decryptedMsg = decryptMessageContent(msg);
         setMessages((prev) => {
           if (prev.some(m => m.id === msg.id)) return prev;
-          return [...prev, msg];
+          return [...prev, decryptedMsg];
         });
       }
     };
@@ -109,7 +120,9 @@ export default function ChatWindow({ conversation, onSendMessage, sendTyping, on
       const sortedMessages = data.sort((a, b) => 
         new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
       );
-      setMessages(sortedMessages);
+      // Déchiffrer les messages E2EE
+      const decryptedMessages = sortedMessages.map(decryptMessageContent);
+      setMessages(decryptedMessages);
       scrollToBottom();
     } catch (error) {
       console.error('Failed to load messages:', error);
@@ -124,7 +137,7 @@ export default function ChatWindow({ conversation, onSendMessage, sendTyping, on
 
   const handleSend = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!message.trim()) return;
+    if (!message.trim() || !conversation) return;
 
     const messageToSend = message;
     setMessage(''); // Vider immédiatement pour UX fluide
@@ -135,7 +148,22 @@ export default function ChatWindow({ conversation, onSendMessage, sendTyping, on
     }
 
     try {
-      await onSendMessage(messageToSend, 'text');
+      // Récupérer la clé publique du destinataire pour E2EE
+      const otherParticipant = conversation.participants?.find(
+        p => p.user_id !== api.getCurrentUserId()
+      );
+      
+      let contentToSend = messageToSend;
+      
+      if (otherParticipant?.user?.public_key) {
+        // Chiffrer le message avec la clé publique du destinataire
+        const encrypted = encryptForStorage(messageToSend, otherParticipant.user.public_key);
+        if (encrypted) {
+          contentToSend = encrypted;
+        }
+      }
+      
+      await onSendMessage(contentToSend, 'text');
       // Recharger les messages après envoi
       await loadMessages();
     } catch (error) {

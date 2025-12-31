@@ -86,6 +86,13 @@ class ApiClient {
     return this.request<User>('/auth/me');
   }
 
+  async updatePublicKey(publicKey: string): Promise<{ message: string; public_key: string }> {
+    return this.request<{ message: string; public_key: string }>('/auth/public-key', {
+      method: 'PUT',
+      body: JSON.stringify({ public_key: publicKey }),
+    });
+  }
+
   async searchUsers(query: string): Promise<User[]> {
     return this.request<User[]>(`/users/search?q=${encodeURIComponent(query)}`);
   }

@@ -4,6 +4,7 @@ export interface User {
   email: string;
   display_name: string;
   avatar_url?: string;
+  public_key?: string;  // E2EE public key (Base64)
   status: 'online' | 'offline';
   last_seen?: string;
   created_at: string;

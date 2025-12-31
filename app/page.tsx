@@ -29,7 +29,10 @@ export default function Home() {
             </h1>
           </div>
           <p className="text-lg text-gray-700 max-w-md font-light">
-            Un endroit sympa pour discuter avec tes potes. Pas de spam, juste toi et tes amis.
+            Je m'ennuyais, alors j'ai fait ça. 🤷‍♂️
+          </p>
+          <p className="text-base text-gray-600 max-w-md font-light">
+            Un chat simple entre potes. Pas de pub, pas de tracking, pas d'inconnus chelous.
           </p>
         </div>
 
@@ -50,26 +53,26 @@ export default function Home() {
 
         <div className="mt-12 grid grid-cols-1 md:grid-cols-3 gap-6 max-w-4xl">
           <div className="bg-white/80 backdrop-blur p-6 rounded-3xl shadow-md border border-orange-100 hover:shadow-lg transition-shadow">
-            <div className="text-4xl mb-3">🔒</div>
-            <h3 className="font-semibold text-gray-800 mb-2">C'est privé</h3>
+            <div className="text-4xl mb-3">🔐</div>
+            <h3 className="font-semibold text-gray-800 mb-2">Chiffré E2E</h3>
             <p className="text-sm text-gray-600 font-light">
-              Tu choisis avec qui tu discutes, pas d'inconnus bizarres
+              Tes messages sont chiffrés de bout en bout. Même nous on peut pas les lire.
             </p>
           </div>
           
           <div className="bg-white/80 backdrop-blur p-6 rounded-3xl shadow-md border border-orange-100 hover:shadow-lg transition-shadow">
             <div className="text-4xl mb-3">⚡</div>
-            <h3 className="font-semibold text-gray-800 mb-2">Super rapide</h3>
+            <h3 className="font-semibold text-gray-800 mb-2">Temps réel</h3>
             <p className="text-sm text-gray-600 font-light">
-              Tes messages arrivent instantanément, comme une vraie conversation
+              Messages instantanés, indicateur de frappe, accusés de lecture
             </p>
           </div>
           
           <div className="bg-white/80 backdrop-blur p-6 rounded-3xl shadow-md border border-orange-100 hover:shadow-lg transition-shadow">
-            <div className="text-4xl mb-3">🎨</div>
-            <h3 className="font-semibold text-gray-800 mb-2">Images & GIFs</h3>
+            <div className="text-4xl mb-3">🤝</div>
+            <h3 className="font-semibold text-gray-800 mb-2">Entre potes</h3>
             <p className="text-sm text-gray-600 font-light">
-              Envoie ce que tu veux, on gère tout
+              Tu choisis avec qui tu discutes, pas d'inconnus bizarres
             </p>
           </div>
         </div>
