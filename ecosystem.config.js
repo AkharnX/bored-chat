@@ -2,7 +2,7 @@ module.exports = {
   apps: [
     {
       name: 'bored-chat-frontend',
-      script: 'node_modules/next/dist/bin/next',
+      script: 'npm',
       args: 'start',
       cwd: '/home/akharn/chat-app/bored-chat',
       instances: 1,

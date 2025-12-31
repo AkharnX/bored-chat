@@ -24,3 +24,17 @@ body {
   color: var(--foreground);
   font-family: Arial, Helvetica, sans-serif;
 }
+
+/* Support pour iPhone avec encoche (safe area) */
+@supports (padding: max(0px)) {
+  .safe-area-bottom {
+    padding-bottom: max(0.5rem, env(safe-area-inset-bottom));
+  }
+}
+
+/* Amélioration du viewport sur mobile */
+@supports (height: 100dvh) {
+  .h-dvh {
+    height: 100dvh;
+  }
+}

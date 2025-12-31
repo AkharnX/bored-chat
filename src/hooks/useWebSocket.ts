@@ -14,6 +14,7 @@ export function useWebSocket() {
   const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const messageCallbackRef = useRef<((msg: Message) => void) | null>(null);
   const typingCallbackRef = useRef<((userId: string, isTyping: boolean) => void) | null>(null);
+  const readCallbackRef = useRef<((conversationId: string) => void) | null>(null);
 
   const connect = useCallback(() => {
     const token = api.getToken();
@@ -35,16 +36,26 @@ export function useWebSocket() {
       ws.onmessage = (event) => {
         try {
           const data: WSMessage = JSON.parse(event.data);
+          console.log('🔔 WebSocket message received:', data.type, data);
           
           if (data.type === 'message' && data.data) {
             const newMessage = data.data as Message;
             setMessages((prev) => [...prev, newMessage]);
             // Appeler le callback si défini (pour rafraîchir ChatWindow)
             if (messageCallbackRef.current) {
+              console.log('📤 Calling message callback for:', newMessage.id);
               messageCallbackRef.current(newMessage);
+            } else {
+              console.warn('⚠️ No message callback registered!');
             }
           } else if (data.type === 'typing') {
-            const { user_id, is_typing } = data.data as any;
+            console.log('🔍 Typing data:', data);
+            // Le sender_id est au niveau racine, pas dans data.data
+            const user_id = data.sender_id;
+            const is_typing = data.data?.is_typing ?? false;
+            
+            console.log('🔍 Extracted:', { user_id, is_typing });
+            
             if (is_typing) {
               setTypingUsers((prev) => ({ ...prev, [user_id]: '' }));
             } else {
@@ -57,9 +68,14 @@ export function useWebSocket() {
             if (typingCallbackRef.current) {
               typingCallbackRef.current(user_id, is_typing);
             }
+          } else if (data.type === 'read') {
+            // Messages lus - notifier pour rafraîchir
+            if (readCallbackRef.current && data.conversation_id) {
+              readCallbackRef.current(data.conversation_id);
+            }
           }
           
-          // Handle other message types (read, user_status)
+          // Handle other message types (user_status)
         } catch (error) {
           console.error('WebSocket message parse error:', error);
         }
@@ -107,6 +123,7 @@ export function useWebSocket() {
   const sendTyping = useCallback((conversationId: string, isTyping: boolean) => {
     sendMessage({
       type: 'typing',
+      conversation_id: conversationId, // Mettre à la racine pour le backend
       data: {
         conversation_id: conversationId,
         is_typing: isTyping,
@@ -115,11 +132,16 @@ export function useWebSocket() {
   }, [sendMessage]);
 
   const onNewMessage = useCallback((callback: (msg: Message) => void) => {
+    console.log('📝 Registering new message callback');
     messageCallbackRef.current = callback;
   }, []);
 
   const onTyping = useCallback((callback: (userId: string, isTyping: boolean) => void) => {
     typingCallbackRef.current = callback;
+  }, []);
+
+  const onRead = useCallback((callback: (conversationId: string) => void) => {
+    readCallbackRef.current = callback;
   }, []);
 
   useEffect(() => {
@@ -135,6 +157,7 @@ export function useWebSocket() {
     sendTyping,
     onNewMessage,
     onTyping,
+    onRead,
     connect,
     disconnect,
   };

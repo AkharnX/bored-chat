@@ -4,15 +4,25 @@ import { useState, useRef, useEffect } from 'react';
 import type { Conversation, Message } from '@/types';
 import { api } from '@/lib/api';
 
+// Fonction pour décoder les entités HTML
+function decodeHtmlEntities(text: string): string {
+  if (typeof window === 'undefined') return text;
+  const textarea = document.createElement('textarea');
+  textarea.innerHTML = text;
+  return textarea.value;
+}
+
 interface ChatWindowProps {
   conversation: Conversation | null;
   onSendMessage: (content: string, type: 'text' | 'image' | 'gif') => void;
   sendTyping?: (conversationId: string, isTyping: boolean) => void;
   onNewMessage?: (callback: (msg: Message) => void) => void;
   onTyping?: (callback: (userId: string, isTyping: boolean) => void) => void;
+  onRead?: (callback: (conversationId: string) => void) => void;
+  onBack?: () => void; // Pour fermer la conversation sur mobile
 }
 
-export default function ChatWindow({ conversation, onSendMessage, sendTyping, onNewMessage, onTyping }: ChatWindowProps) {
+export default function ChatWindow({ conversation, onSendMessage, sendTyping, onNewMessage, onTyping, onRead, onBack }: ChatWindowProps) {
   const [message, setMessage] = useState('');
   const [messages, setMessages] = useState<Message[]>([]);
   const [loading, setLoading] = useState(false);
@@ -22,9 +32,11 @@ export default function ChatWindow({ conversation, onSendMessage, sendTyping, on
   const [typingTimeout, setTypingTimeout] = useState<NodeJS.Timeout | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const currentConversationIdRef = useRef<string | null>(null);
 
   useEffect(() => {
     if (conversation) {
+      currentConversationIdRef.current = conversation.id;
       loadMessages();
       // Réinitialiser le message lors du changement de conversation
       setMessage('');
@@ -36,37 +48,83 @@ export default function ChatWindow({ conversation, onSendMessage, sendTyping, on
     scrollToBottom();
   }, [messages]);
 
-  // Écouter les nouveaux messages via WebSocket
+  // Écouter les nouveaux messages via WebSocket - N'enregistrer qu'une seule fois
   useEffect(() => {
-    if (onNewMessage && conversation) {
-      onNewMessage((msg: Message) => {
-        // Ajouter seulement si c'est pour cette conversation
-        if (msg.conversation_id === conversation.id) {
-          setMessages((prev) => {
-            // Éviter les doublons
-            if (prev.some(m => m.id === msg.id)) return prev;
-            return [...prev, msg];
-          });
-        }
-      });
-    }
-  }, [onNewMessage, conversation?.id]);
+    if (!onNewMessage) return;
+
+    console.log('🎧 Setting up ONE-TIME message listener');
+    
+    const handleNewMessage = (msg: Message) => {
+      console.log('📩 New message received in ChatWindow:', msg);
+      // Utiliser le ref pour vérifier la conversation courante
+      const currentConvId = currentConversationIdRef.current;
+      if (!currentConvId) {
+        console.log('⏭️ No active conversation');
+        return;
+      }
+      
+      // Ajouter seulement si c'est pour cette conversation
+      if (msg.conversation_id === currentConvId) {
+        setMessages((prev) => {
+          // Éviter les doublons
+          if (prev.some(m => m.id === msg.id)) {
+            console.log('⚠️ Duplicate message, skipping:', msg.id);
+            return prev;
+          }
+          console.log('✅ Adding new message to conversation, current count:', prev.length);
+          return [...prev, msg];
+        });
+      } else {
+        console.log('⏭️ Message for different conversation, skipping. Expected:', currentConvId, 'Got:', msg.conversation_id);
+      }
+    };
+
+    onNewMessage(handleNewMessage);
+    
+    return () => {
+      console.log('🧹 Cleaning up ONE-TIME message listener');
+    };
+  }, [onNewMessage]); // Ne dépend QUE de onNewMessage qui est stable
 
   // Écouter les événements "est en train d'écrire"
   useEffect(() => {
-    if (onTyping && conversation) {
-      onTyping((userId: string, isTyping: boolean) => {
-        // Vérifier si c'est l'autre personne de cette conversation
-        const otherUser = conversation.participants?.find(
-          p => p.user_id !== api.getCurrentUserId()
-        );
-        
-        if (otherUser && userId === otherUser.user_id) {
-          setOtherIsTyping(isTyping);
-        }
-      });
-    }
+    if (!onTyping || !conversation) return;
+
+    const handleTyping = (userId: string, isTyping: boolean) => {
+      console.log('⌨️ Typing event:', userId, isTyping);
+      // Vérifier si c'est l'autre personne de cette conversation
+      const otherUser = conversation.participants?.find(
+        p => p.user_id !== api.getCurrentUserId()
+      );
+      
+      if (otherUser && userId === otherUser.user_id) {
+        setOtherIsTyping(isTyping);
+      }
+    };
+
+    onTyping(handleTyping);
   }, [onTyping, conversation?.id]);
+
+  // Écouter les événements "message lu"
+  useEffect(() => {
+    if (!onRead || !conversation) return;
+
+    const handleRead = (conversationId: string) => {
+      console.log('✓✓ Read event:', conversationId);
+      // Si c'est notre conversation, mettre à jour les messages localement
+      if (conversationId === conversation.id) {
+        setMessages((prev) =>
+          prev.map((msg) =>
+            msg.sender_id === api.getCurrentUserId()
+              ? { ...msg, is_read: true }
+              : msg
+          )
+        );
+      }
+    };
+
+    onRead(handleRead);
+  }, [onRead, conversation?.id]);
 
   const loadMessages = async () => {
     if (!conversation) return;
@@ -190,15 +248,28 @@ export default function ChatWindow({ conversation, onSendMessage, sendTyping, on
   );
 
   return (
-    <div className="flex-1 flex flex-col bg-white h-full max-h-screen overflow-hidden">
+    <div className="flex-1 flex flex-col bg-white overflow-hidden min-h-0">
       {/* Header */}
-      <div className="bg-white border-b border-orange-100 px-4 md:px-6 py-3 md:py-4 shadow-sm flex-shrink-0">
-        <div className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded-full bg-gradient-to-br from-orange-400 to-amber-400 flex items-center justify-center text-white font-semibold">
+      <div className="bg-white border-b border-orange-100 px-3 md:px-6 py-2.5 md:py-4 shadow-sm flex-shrink-0">
+        <div className="flex items-center gap-2 md:gap-3">
+          {/* Bouton retour mobile */}
+          {onBack && (
+            <button
+              onClick={onBack}
+              className="md:hidden p-2 hover:bg-orange-100 rounded-full transition"
+              title="Retour aux conversations"
+            >
+              <svg className="w-6 h-6 text-gray-700" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+              </svg>
+            </button>
+          )}
+          
+          <div className="w-10 h-10 rounded-full bg-gradient-to-br from-orange-400 to-amber-400 flex items-center justify-center text-white font-semibold flex-shrink-0">
             {otherParticipant?.user?.username?.[0]?.toUpperCase() || '?'}
           </div>
-          <div>
-            <h2 className="font-semibold text-gray-900">
+          <div className="flex-1 min-w-0">
+            <h2 className="font-semibold text-gray-900 truncate">
               {otherParticipant?.user?.display_name || otherParticipant?.user?.username || 'Unknown'}
             </h2>
             <p className="text-sm text-gray-500">
@@ -209,7 +280,7 @@ export default function ChatWindow({ conversation, onSendMessage, sendTyping, on
       </div>
 
       {/* Messages */}
-      <div className="flex-1 overflow-y-auto p-3 md:p-6 space-y-3 md:space-y-4 bg-gradient-to-br from-orange-50/30 to-amber-50/30">
+      <div className="flex-1 overflow-y-auto p-2 md:p-4 lg:p-6 space-y-2 md:space-y-3 bg-gradient-to-br from-orange-50/30 to-amber-50/30">
         {loading ? (
           <div className="flex justify-center items-center h-full">
             <div className="text-gray-500">⏳ Chargement des messages...</div>
@@ -241,7 +312,7 @@ export default function ChatWindow({ conversation, onSendMessage, sendTyping, on
                   }`}
                 >
                   {msg.message_type === 'text' ? (
-                    <p className="break-words">{msg.content}</p>
+                    <p className="break-words">{decodeHtmlEntities(msg.content)}</p>
                   ) : (
                     <div>
                       <img
@@ -253,22 +324,32 @@ export default function ChatWindow({ conversation, onSendMessage, sendTyping, on
                         className="max-w-full rounded-t-lg"
                       />
                       {msg.content && (
-                        <p className="px-3 py-2 break-words">{msg.content}</p>
+                        <p className="px-3 py-2 break-words">{decodeHtmlEntities(msg.content)}</p>
                       )}
                     </div>
                   )}
-                  <p
-                    className={`text-xs mt-1 ${
+                  <div
+                    className={`flex items-center gap-1 mt-1 ${
                       msg.message_type === 'text' ? '' : 'px-3 pb-2'
-                    } ${
-                      isOwn ? 'text-orange-100' : 'text-gray-500'
                     }`}
                   >
-                    {new Date(msg.created_at).toLocaleTimeString('fr-FR', {
-                      hour: '2-digit',
-                      minute: '2-digit',
-                    })}
-                  </p>
+                    <p
+                      className={`text-xs ${
+                        isOwn ? 'text-orange-100' : 'text-gray-500'
+                      }`}
+                    >
+                      {new Date(msg.created_at).toLocaleTimeString('fr-FR', {
+                        hour: '2-digit',
+                        minute: '2-digit',
+                      })}
+                    </p>
+                    {/* Double check pour les messages envoyés */}
+                    {isOwn && (
+                      <span className={`text-xs ${msg.is_read ? 'text-blue-300' : 'text-orange-100'}`}>
+                        {msg.is_read ? '✓✓' : '✓'}
+                      </span>
+                    )}
+                  </div>
                 </div>
               </div>
             );
@@ -290,8 +371,8 @@ export default function ChatWindow({ conversation, onSendMessage, sendTyping, on
       )}
 
       {/* Input */}
-      <form onSubmit={handleSend} className="bg-white border-t border-orange-100 px-3 md:px-6 py-3 md:py-4 flex-shrink-0">
-        <div className="flex gap-2 md:gap-3 items-center">
+      <form onSubmit={handleSend} className="bg-white border-t border-orange-100 px-2 md:px-4 lg:px-6 py-2 md:py-3 flex-shrink-0 safe-area-bottom">
+        <div className="flex gap-1.5 md:gap-2 lg:gap-3 items-center">
           {/* Bouton Image */}
           <input
             ref={fileInputRef}
@@ -304,13 +385,13 @@ export default function ChatWindow({ conversation, onSendMessage, sendTyping, on
             type="button"
             onClick={() => fileInputRef.current?.click()}
             disabled={uploading}
-            className="p-2 md:p-3 text-orange-500 hover:bg-orange-100 rounded-full transition disabled:opacity-50"
+            className="p-2 text-orange-500 hover:bg-orange-100 rounded-full transition disabled:opacity-50 flex-shrink-0"
             title="Envoyer une image"
           >
             {uploading ? (
               <span className="text-xl">⏳</span>
             ) : (
-              <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <svg className="w-5 h-5 md:w-6 md:h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
               </svg>
             )}
@@ -321,12 +402,12 @@ export default function ChatWindow({ conversation, onSendMessage, sendTyping, on
             value={message || ''}
             onChange={handleTyping}
             placeholder="Écris ton message..."
-            className="flex-1 px-3 md:px-4 py-2 md:py-3 border border-orange-200 rounded-2xl focus:ring-2 focus:ring-orange-400 focus:border-transparent outline-none transition text-gray-900 placeholder:text-gray-400 text-sm md:text-base"
+            className="flex-1 px-3 py-2 border border-orange-200 rounded-2xl focus:ring-2 focus:ring-orange-400 focus:border-transparent outline-none transition text-gray-900 placeholder:text-gray-400 text-sm"
           />
           <button
             type="submit"
             disabled={!message.trim()}
-            className="px-4 md:px-6 py-2 md:py-3 bg-gradient-to-r from-orange-500 to-amber-500 text-white font-medium rounded-2xl hover:from-orange-600 hover:to-amber-600 disabled:opacity-50 disabled:cursor-not-allowed transition shadow-lg text-sm md:text-base"
+            className="px-3 md:px-4 lg:px-6 py-2 bg-gradient-to-r from-orange-500 to-amber-500 text-white font-medium rounded-2xl hover:from-orange-600 hover:to-amber-600 disabled:opacity-50 disabled:cursor-not-allowed transition shadow-lg text-sm flex-shrink-0"
           >
             <span className="hidden md:inline">Envoyer 🚀</span>
             <span className="md:hidden">🚀</span>

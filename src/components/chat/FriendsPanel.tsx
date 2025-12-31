@@ -3,12 +3,14 @@
 import { useState, useEffect } from 'react';
 import type { User, Friendship } from '@/types';
 import { api } from '@/lib/api';
+import { useAuth } from '@/contexts/AuthContext';
 
 interface FriendsPanelProps {
   onConversationCreated: () => void;
 }
 
 export default function FriendsPanel({ onConversationCreated }: FriendsPanelProps) {
+  const { user: currentUser } = useAuth();
   const [activeTab, setActiveTab] = useState<'search' | 'requests' | 'friends'>('friends');
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState<User[]>([]);
@@ -211,6 +213,7 @@ export default function FriendsPanel({ onConversationCreated }: FriendsPanelProp
           <div className="space-y-3">
             {friendRequests.length > 0 ? (
               friendRequests.map((request) => {
+                // L'expéditeur est toujours celui qui a envoyé la demande (requester)
                 const sender = request.requester;
                 return (
                   <div
@@ -256,7 +259,10 @@ export default function FriendsPanel({ onConversationCreated }: FriendsPanelProp
           <div className="space-y-3">
             {friends.length > 0 ? (
               friends.map((friendship) => {
-                const friend = friendship.requester || friendship.addressee;
+                // Déterminer qui est l'ami (l'autre personne, pas l'utilisateur actuel)
+                const friend = friendship.requester_id === currentUser?.id 
+                  ? friendship.addressee 
+                  : friendship.requester;
                 return (
                   <div
                     key={friendship.id}
