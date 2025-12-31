@@ -294,7 +294,7 @@ export default function ChatWindow({ conversation, onSendMessage, sendTyping, on
                           : `${process.env.NEXT_PUBLIC_API_URL?.replace('/api', '') || 'http://localhost:9000'}${msg.media_url}`
                         }
                         alt="Image partagée"
-                        className="max-w-full rounded-t-lg"
+                        className="max-w-[250px] md:max-w-[300px] max-h-[300px] object-contain rounded-t-lg"
                       />
                       {msg.content && (
                         <p className="px-3 py-2 break-words">{decodeHtmlEntities(msg.content)}</p>
