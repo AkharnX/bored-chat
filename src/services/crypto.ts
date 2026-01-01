@@ -88,6 +88,25 @@ export function clearKeys(): void {
 }
 
 /**
+ * Check if local public key matches server public key
+ */
+export function keysMatch(serverPublicKey: string | null | undefined): boolean {
+  if (!serverPublicKey) return false;
+  const localKey = getPublicKey();
+  return localKey === serverPublicKey;
+}
+
+/**
+ * Force regenerate keys and return the new public key
+ */
+export function regenerateKeys(): string {
+  if (typeof window === 'undefined') return '';
+  const keyPair = generateKeyPair();
+  localStorage.setItem(KEYS_STORAGE_KEY, JSON.stringify(keyPair));
+  return keyPair.publicKey;
+}
+
+/**
  * Encrypt a message for a recipient using their public key
  * Uses nacl.box with ephemeral keys for forward secrecy
  */
@@ -133,8 +152,11 @@ export function decryptMessage(encrypted: EncryptedMessage): string | null {
   try {
     const keyPair = getOrCreateKeyPair();
     if (!keyPair.secretKey) {
+      console.error('[E2EE] No secret key available');
       return null;
     }
+
+    console.log('[E2EE] Attempting decrypt with local key:', keyPair.publicKey.substring(0, 20) + '...');
 
     const secretKeyBytes = decodeBase64(keyPair.secretKey);
     const ciphertextBytes = decodeBase64(encrypted.ciphertext);
@@ -149,14 +171,25 @@ export function decryptMessage(encrypted: EncryptedMessage): string | null {
     );
 
     if (!decrypted) {
+      console.warn('[E2EE] Decryption failed - wrong key or corrupted message');
       return null;
     }
 
     return encodeUTF8(decrypted);
   } catch (error) {
-    console.error('Decryption failed:', error);
+    console.error('[E2EE] decryptMessage error:', error);
     return null;
   }
+}
+
+/**
+ * Decode HTML entities in a string
+ */
+function decodeHtmlEntities(text: string): string {
+  if (typeof window === 'undefined') return text;
+  const textarea = document.createElement('textarea');
+  textarea.innerHTML = text;
+  return textarea.value;
 }
 
 /**
@@ -164,7 +197,10 @@ export function decryptMessage(encrypted: EncryptedMessage): string | null {
  */
 export function isEncryptedMessage(content: string): boolean {
   try {
-    const parsed = JSON.parse(content);
+    // Decode HTML entities first (backend may encode " as &#34;)
+    const decoded = decodeHtmlEntities(content);
+    
+    const parsed = JSON.parse(decoded);
     // Check for dual encryption format (new)
     if (parsed.forRecipient && parsed.forSender) {
       return true;
@@ -184,23 +220,64 @@ export function isEncryptedMessage(content: string): boolean {
 /**
  * Try to decrypt a message content, return original if not encrypted or decryption fails
  */
-export function tryDecrypt(content: string, isSender: boolean = false, fallbackToOriginal: boolean = true): string {
+export function tryDecrypt(content: string, isSender: boolean = false, fallbackToOriginal: boolean = true, myDeviceId?: string): string {
+  // Client-side only
+  if (typeof window === 'undefined') {
+    return content;
+  }
+
   if (!isEncryptedMessage(content)) {
     return content;
   }
 
   try {
-    const parsed = JSON.parse(content);
+    // Decode HTML entities first (backend may encode " as &#34;)
+    const decoded = decodeHtmlEntities(content);
+    const parsed = JSON.parse(decoded);
     
-    // New dual encryption format
+    console.log('[E2EE] tryDecrypt - isSender:', isSender, 'has forRecipient:', !!parsed.forRecipient, 'has forSender:', !!parsed.forSender);
+    
+    // Multi-device format (new)
+    if (parsed.recipientDevices || parsed.senderDevices) {
+      const deviceId = myDeviceId || localStorage.getItem('bored_chat_device_id') || '';
+      const decrypted = decryptMultiDeviceMessage(parsed as MultiDeviceEncryptedMessage, deviceId, isSender);
+      if (decrypted !== null) {
+        return decrypted;
+      }
+      console.warn('[E2EE] Could not decrypt multi-device message');
+      return '🔒 Message chiffré (clés incompatibles)';
+    }
+    
+    // Dual encryption format (backward compat)
     if (parsed.forRecipient && parsed.forSender) {
-      const encryptedVersion = isSender ? parsed.forSender : parsed.forRecipient;
-      const decrypted = decryptMessage(encryptedVersion as EncryptedMessage);
+      // Try the expected version first
+      const primaryVersion = isSender ? parsed.forSender : parsed.forRecipient;
+      console.log('[E2EE] Trying primary version (', isSender ? 'forSender' : 'forRecipient', ')');
+      let decrypted = decryptMessage(primaryVersion as EncryptedMessage);
+      
+      if (decrypted !== null) {
+        console.log('[E2EE] Primary decryption successful');
+        return decrypted;
+      }
+      
+      // If that fails, try the other version (in case of role confusion)
+      const fallbackVersion = isSender ? parsed.forRecipient : parsed.forSender;
+      console.log('[E2EE] Trying fallback version (', isSender ? 'forRecipient' : 'forSender', ')');
+      decrypted = decryptMessage(fallbackVersion as EncryptedMessage);
       
       if (decrypted !== null) {
         return decrypted;
       }
-      return fallbackToOriginal ? '🔒 Message chiffré (impossible à déchiffrer)' : content;
+      
+      // Try both versions regardless of sender status
+      decrypted = decryptMessage(parsed.forSender as EncryptedMessage);
+      if (decrypted !== null) return decrypted;
+      
+      decrypted = decryptMessage(parsed.forRecipient as EncryptedMessage);
+      if (decrypted !== null) return decrypted;
+      
+      console.warn('[E2EE] Could not decrypt with any key version');
+      return '🔒 Message chiffré (clés incompatibles)';
     }
     
     // Legacy single encryption format
@@ -212,9 +289,10 @@ export function tryDecrypt(content: string, isSender: boolean = false, fallbackT
     }
     
     // Decryption failed - message was encrypted for someone else or keys changed
-    return fallbackToOriginal ? '🔒 Message chiffré (impossible à déchiffrer)' : content;
-  } catch {
-    return fallbackToOriginal ? content : '🔒 Message chiffré (erreur)';
+    return '🔒 Message chiffré (clés incompatibles)';
+  } catch (e) {
+    console.error('[E2EE] tryDecrypt error:', e);
+    return fallbackToOriginal ? content : '🔒 Erreur de déchiffrement';
   }
 }
 
@@ -241,4 +319,117 @@ export function encryptForStorage(plaintext: string, recipientPublicKey: string)
     forRecipient,
     forSender,
   });
+}
+
+export interface DeviceEncryptedEnvelope {
+  deviceId: string;
+  encrypted: EncryptedMessage;
+}
+
+export interface MultiDeviceEncryptedMessage {
+  // Array of envelopes for each device of the recipient
+  recipientDevices: DeviceEncryptedEnvelope[];
+  // Array of envelopes for each device of the sender (so sender can read on all their devices)
+  senderDevices: DeviceEncryptedEnvelope[];
+  // Fallback for single recipient key (backward compat)
+  forRecipient?: EncryptedMessage;
+  // Fallback for single sender key (backward compat)
+  forSender?: EncryptedMessage;
+}
+
+/**
+ * Encrypt a message for multiple devices
+ * Each device gets its own encrypted envelope
+ */
+export function encryptForMultipleDevices(
+  plaintext: string,
+  recipientDeviceKeys: { deviceId: string; publicKey: string }[],
+  senderDeviceKeys: { deviceId: string; publicKey: string }[]
+): MultiDeviceEncryptedMessage | null {
+  const recipientDevices: DeviceEncryptedEnvelope[] = [];
+  const senderDevices: DeviceEncryptedEnvelope[] = [];
+  
+  // Encrypt for each recipient device
+  for (const device of recipientDeviceKeys) {
+    const encrypted = encryptMessage(plaintext, device.publicKey);
+    if (encrypted) {
+      recipientDevices.push({ deviceId: device.deviceId, encrypted });
+    }
+  }
+  
+  // Encrypt for each sender device
+  for (const device of senderDeviceKeys) {
+    const encrypted = encryptMessage(plaintext, device.publicKey);
+    if (encrypted) {
+      senderDevices.push({ deviceId: device.deviceId, encrypted });
+    }
+  }
+  
+  // At least one recipient and one sender envelope required
+  if (recipientDevices.length === 0 || senderDevices.length === 0) {
+    console.error('[E2EE] Failed to encrypt for all devices');
+    return null;
+  }
+  
+  // Also include single-key fallback for backward compat
+  // Use the first device's key as fallback
+  const forRecipient = recipientDevices[0]?.encrypted;
+  const forSender = senderDevices[0]?.encrypted;
+  
+  return {
+    recipientDevices,
+    senderDevices,
+    forRecipient,
+    forSender,
+  };
+}
+
+/**
+ * Try to decrypt a multi-device message by finding the envelope for our device
+ */
+export function decryptMultiDeviceMessage(
+  message: MultiDeviceEncryptedMessage,
+  myDeviceId: string,
+  isSender: boolean
+): string | null {
+  const envelopes = isSender ? message.senderDevices : message.recipientDevices;
+  
+  // First, try to find our exact device envelope
+  if (envelopes && Array.isArray(envelopes)) {
+    const myEnvelope = envelopes.find(e => e.deviceId === myDeviceId);
+    if (myEnvelope) {
+      const decrypted = decryptMessage(myEnvelope.encrypted);
+      if (decrypted) return decrypted;
+    }
+    
+    // Try all envelopes in case deviceId changed
+    for (const envelope of envelopes) {
+      const decrypted = decryptMessage(envelope.encrypted);
+      if (decrypted) return decrypted;
+    }
+  }
+  
+  // Fallback to single-key format
+  const fallback = isSender ? message.forSender : message.forRecipient;
+  if (fallback) {
+    const decrypted = decryptMessage(fallback);
+    if (decrypted) return decrypted;
+  }
+  
+  // Try the other direction as well
+  const otherEnvelopes = isSender ? message.recipientDevices : message.senderDevices;
+  if (otherEnvelopes && Array.isArray(otherEnvelopes)) {
+    for (const envelope of otherEnvelopes) {
+      const decrypted = decryptMessage(envelope.encrypted);
+      if (decrypted) return decrypted;
+    }
+  }
+  
+  const otherFallback = isSender ? message.forRecipient : message.forSender;
+  if (otherFallback) {
+    const decrypted = decryptMessage(otherFallback);
+    if (decrypted) return decrypted;
+  }
+  
+  return null;
 }

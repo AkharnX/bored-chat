@@ -30,6 +30,9 @@ body {
   .safe-area-bottom {
     padding-bottom: max(0.5rem, env(safe-area-inset-bottom));
   }
+  .safe-area-pb {
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+  }
 }
 
 /* Amélioration du viewport sur mobile */
@@ -37,4 +40,32 @@ body {
   .h-dvh {
     height: 100dvh;
   }
+}
+
+/* Fix scroll iOS - seulement pour le conteneur chat */
+html {
+  height: 100%;
+}
+
+body {
+  height: 100%;
+  overflow-x: hidden;
+}
+
+/* Conteneur de chat avec overflow hidden */
+.chat-container {
+  overflow: hidden;
+  overscroll-behavior: none;
+}
+
+/* Smooth scrolling on touch devices */
+.overflow-y-auto {
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior-y: contain;
+}
+
+/* Pages scrollables (comme settings) */
+.scrollable-page {
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
 }

@@ -15,10 +15,16 @@ const geistMono = Geist_Mono({
 
 export const metadata: Metadata = {
   title: "Bored Chat - Secure Private Messaging",
-  description: "A secure, private chat application with end-to-end encryption",
+  description: "Chat sécurisé entre potes avec chiffrement E2E",
+  manifest: "/manifest.json",
   icons: {
     icon: "/favicon.ico",
-    apple: "/logo.png",
+    apple: "/icons/icon-192x192.png",
+  },
+  appleWebApp: {
+    capable: true,
+    statusBarStyle: "default",
+    title: "Bored Chat",
   },
 };
 
@@ -36,13 +42,32 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en">
+    <html lang="fr">
+      <head>
+        <meta name="apple-mobile-web-app-capable" content="yes" />
+        <meta name="mobile-web-app-capable" content="yes" />
+        <meta name="theme-color" content="#F97316" />
+        <link rel="apple-touch-icon" href="/icons/icon-192x192.png" />
+      </head>
       <body
         className={`${geistSans.variable} ${geistMono.variable} antialiased`}
       >
         <AuthProvider>
           {children}
         </AuthProvider>
+        <script
+          dangerouslySetInnerHTML={{
+            __html: `
+              if ('serviceWorker' in navigator) {
+                window.addEventListener('load', () => {
+                  navigator.serviceWorker.register('/sw.js')
+                    .then(reg => console.log('SW registered'))
+                    .catch(err => console.log('SW registration failed:', err));
+                });
+              }
+            `,
+          }}
+        />
       </body>
     </html>
   );

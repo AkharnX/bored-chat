@@ -47,7 +47,7 @@ export interface Message {
   conversation_id: string;
   sender_id: string;
   content: string;
-  message_type: 'text' | 'image' | 'gif';
+  message_type: 'text' | 'image' | 'gif' | 'voice';
   media_url?: string;
   media_type?: string;
   media_size?: number;
@@ -58,12 +58,12 @@ export interface Message {
 }
 
 export interface WSMessage {
-  type: 'message' | 'typing' | 'read' | 'user_status';
+  type: 'message' | 'typing' | 'read' | 'user_status' | 'ping' | 'pong';
   conversation_id?: string;
   sender_id: string;
   recipient_id?: string;
   content?: string;
-  message_type?: 'text' | 'image' | 'gif';
+  message_type?: 'text' | 'image' | 'gif' | 'voice';
   media_url?: string;
   data?: any;
 }
@@ -75,4 +75,15 @@ export interface AuthResponse {
 
 export interface ApiError {
   error: string;
+}
+
+export interface DeviceKey {
+  id: string;
+  user_id: string;
+  device_id: string;
+  public_key: string;
+  device_name?: string;
+  last_seen?: string;
+  created_at: string;
+  updated_at: string;
 }

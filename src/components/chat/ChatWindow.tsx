@@ -1,9 +1,18 @@
 'use client';
 
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useCallback } from 'react';
 import type { Conversation, Message } from '@/types';
 import { api } from '@/lib/api';
 import { encryptForStorage, tryDecrypt } from '@/services/crypto';
+import { encryptMessageMultiDevice } from '@/services/multiDeviceEncrypt';
+import { 
+  initMessageStore, 
+  getLocalMessages, 
+  storeMessages, 
+  storeMessage,
+  hasLocalMessage 
+} from '@/services/messageStore';
+import AudioPlayer from './AudioPlayer';
 
 // Fonction pour décoder les entités HTML
 function decodeHtmlEntities(text: string): string {
@@ -16,15 +25,56 @@ function decodeHtmlEntities(text: string): string {
 // Décrypter un message (texte uniquement)
 function decryptMessageContent(msg: Message, currentUserId: string | null): Message {
   if (msg.message_type !== 'text') return msg;
+  if (typeof window === 'undefined') return msg;
   
   const isSender = msg.sender_id === currentUserId;
+  console.log('[E2EE] decryptMessageContent - msgId:', msg.id, 'sender:', msg.sender_id, 'currentUser:', currentUserId, 'isSender:', isSender);
   const decrypted = tryDecrypt(msg.content, isSender);
   return { ...msg, content: decrypted };
 }
 
+// Helper pour afficher le contenu déchiffré
+function getDisplayContent(msg: Message, currentUserId: string | null): string {
+  if (msg.message_type !== 'text') return msg.content;
+  if (typeof window === 'undefined') return msg.content;
+  
+  const isSender = msg.sender_id === currentUserId;
+  return tryDecrypt(msg.content, isSender);
+}
+
+// Helper pour formater la date du séparateur
+function formatDateSeparator(date: Date): string {
+  const today = new Date();
+  const yesterday = new Date(today);
+  yesterday.setDate(yesterday.getDate() - 1);
+  
+  const isToday = date.toDateString() === today.toDateString();
+  const isYesterday = date.toDateString() === yesterday.toDateString();
+  
+  if (isToday) return "Aujourd'hui";
+  if (isYesterday) return "Hier";
+  
+  return date.toLocaleDateString('fr-FR', { 
+    weekday: 'long', 
+    day: 'numeric', 
+    month: 'long',
+    year: date.getFullYear() !== today.getFullYear() ? 'numeric' : undefined
+  });
+}
+
+// Helper pour vérifier si on doit afficher un séparateur de date
+function shouldShowDateSeparator(currentMsg: Message, previousMsg: Message | null): boolean {
+  if (!previousMsg) return true; // Toujours montrer pour le premier message
+  
+  const currentDate = new Date(currentMsg.created_at).toDateString();
+  const previousDate = new Date(previousMsg.created_at).toDateString();
+  
+  return currentDate !== previousDate;
+}
+
 interface ChatWindowProps {
   conversation: Conversation | null;
-  onSendMessage: (content: string, type: 'text' | 'image' | 'gif') => void;
+  onSendMessage: (content: string, type: 'text' | 'image' | 'gif') => Promise<Message | null>;
   sendTyping?: (conversationId: string, isTyping: boolean) => void;
   onNewMessage?: (callback: (msg: Message) => void) => void;
   onTyping?: (callback: (userId: string, isTyping: boolean) => void) => void;
@@ -40,9 +90,22 @@ export default function ChatWindow({ conversation, onSendMessage, sendTyping, on
   const [isSelfTyping, setIsSelfTyping] = useState(false);
   const [otherIsTyping, setOtherIsTyping] = useState(false);
   const [typingTimeout, setTypingTimeout] = useState<NodeJS.Timeout | null>(null);
+  const [isClient, setIsClient] = useState(false);
+  const [imageModal, setImageModal] = useState<string | null>(null); // URL de l'image en plein écran
+  // Voice recording state
+  const [isRecording, setIsRecording] = useState(false);
+  const [recordingDuration, setRecordingDuration] = useState(0);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const audioChunksRef = useRef<Blob[]>([]);
+  const recordingTimerRef = useRef<NodeJS.Timeout | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const currentConversationIdRef = useRef<string | null>(null);
+
+  // Ensure we're on client side before decrypting
+  useEffect(() => {
+    setIsClient(true);
+  }, []);
 
   useEffect(() => {
     if (conversation) {
@@ -62,16 +125,40 @@ export default function ChatWindow({ conversation, onSendMessage, sendTyping, on
     
     const handleNewMessage = (msg: Message) => {
       const currentConvId = currentConversationIdRef.current;
-      if (!currentConvId) return;
+      console.log('[ChatWindow] handleNewMessage - msg.conversation_id:', msg.conversation_id, 'currentConvId:', currentConvId);
+      
+      if (!currentConvId) {
+        console.log('[ChatWindow] No current conversation, ignoring');
+        return;
+      }
       
       if (msg.conversation_id === currentConvId) {
-        // Déchiffrer le message E2EE
+        console.log('[ChatWindow] Message matches current conversation, adding to UI');
+        // Decrypt the E2EE message
         const currentUserId = api.getCurrentUserId();
         const decryptedMsg = decryptMessageContent(msg, currentUserId);
+        
+        // Store locally only if decryption succeeded
+        if (!decryptedMsg.content.includes('🔒')) {
+          storeMessage(decryptedMsg).then(() => {
+            console.log('[E2EE] Message stored locally');
+          });
+        }
+        
         setMessages((prev) => {
+          // Check duplicate
           if (prev.some(m => m.id === msg.id)) return prev;
           return [...prev, decryptedMsg];
         });
+
+        // Marquer comme lu si ce n'est pas notre message
+        if (msg.sender_id !== currentUserId) {
+          api.markAsRead(currentConvId).catch(err => {
+            console.error('[ChatWindow] Failed to mark as read:', err);
+          });
+        }
+      } else {
+        console.log('[ChatWindow] Message for different conversation, ignoring');
       }
     };
 
@@ -98,6 +185,7 @@ export default function ChatWindow({ conversation, onSendMessage, sendTyping, on
     if (!onRead || !conversation) return;
 
     const handleRead = (conversationId: string) => {
+      console.log('[ChatWindow] handleRead called for conversation:', conversationId, 'current:', conversation.id);
       if (conversationId === conversation.id) {
         setMessages((prev) =>
           prev.map((msg) =>
@@ -112,27 +200,79 @@ export default function ChatWindow({ conversation, onSendMessage, sendTyping, on
     onRead(handleRead);
   }, [onRead, conversation?.id]);
 
-  const loadMessages = async () => {
+  // Initialize IndexedDB on mount
+  useEffect(() => {
+    initMessageStore();
+  }, []);
+
+  const loadMessages = useCallback(async () => {
     if (!conversation) return;
     
     setLoading(true);
+    const currentUserId = api.getCurrentUserId();
+    
     try {
-      const data = await api.getMessages(conversation.id);
-      // Trier par date : anciens en haut, nouveaux en bas
-      const sortedMessages = data.sort((a, b) => 
+      // 1. First, try to load from local IndexedDB (instant, already decrypted)
+      const localMessages = await getLocalMessages(conversation.id);
+      
+      if (localMessages.length > 0) {
+        // Show local messages immediately
+        setMessages(localMessages);
+        scrollToBottom();
+      }
+      
+      // 2. Fetch from server to get any new messages
+      const serverMessages = await api.getMessages(conversation.id);
+      
+      // Sort by date
+      const sortedMessages = serverMessages.sort((a, b) => 
         new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
       );
-      // Déchiffrer les messages E2EE
-      const currentUserId = api.getCurrentUserId();
-      const decryptedMessages = sortedMessages.map(msg => decryptMessageContent(msg, currentUserId));
-      setMessages(decryptedMessages);
+      
+      // 3. Process messages: use local version if exists, otherwise decrypt and store
+      const processedMessages: Message[] = [];
+      const newMessagesToStore: Message[] = [];
+      
+      // Create a map of local messages for quick lookup
+      const localMessageMap = new Map(localMessages.map(m => [m.id, m]));
+      
+      for (const serverMsg of sortedMessages) {
+        const localMsg = localMessageMap.get(serverMsg.id);
+        
+        if (localMsg && !localMsg.content.includes('🔒')) {
+          // Already have this message locally (already decrypted successfully)
+          processedMessages.push(localMsg);
+        } else {
+          // New message or failed decryption before - try to decrypt again
+          const decryptedMsg = decryptMessageContent(serverMsg, currentUserId);
+          processedMessages.push(decryptedMsg);
+          
+          // Only store if decryption was successful (not a locked message)
+          if (!decryptedMsg.content.includes('🔒')) {
+            newMessagesToStore.push(decryptedMsg);
+          }
+        }
+      }
+      
+      // 4. Store new messages locally for future use
+      if (newMessagesToStore.length > 0) {
+        await storeMessages(newMessagesToStore);
+        console.log(`[E2EE] Stored ${newMessagesToStore.length} new messages locally`);
+      }
+      
+      setMessages(processedMessages);
       scrollToBottom();
     } catch (error) {
       console.error('Failed to load messages:', error);
+      // If server fails, at least show local messages
+      const localMessages = await getLocalMessages(conversation.id);
+      if (localMessages.length > 0) {
+        setMessages(localMessages);
+      }
     } finally {
       setLoading(false);
     }
-  };
+  }, [conversation?.id]);
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -157,18 +297,42 @@ export default function ChatWindow({ conversation, onSendMessage, sendTyping, on
       );
       
       let contentToSend = messageToSend;
+      const currentUserId = api.getCurrentUserId();
       
-      if (otherParticipant?.user?.public_key) {
-        // Chiffrer le message avec la clé publique du destinataire
+      if (otherParticipant?.user_id && currentUserId) {
+        // Utiliser le chiffrement multi-device
+        const encrypted = await encryptMessageMultiDevice(
+          messageToSend,
+          otherParticipant.user_id,
+          currentUserId,
+          otherParticipant.user?.public_key // fallback legacy key
+        );
+        if (encrypted) {
+          contentToSend = encrypted;
+        }
+      } else if (otherParticipant?.user?.public_key) {
+        // Fallback: chiffrement legacy si pas d'IDs disponibles
         const encrypted = encryptForStorage(messageToSend, otherParticipant.user.public_key);
         if (encrypted) {
           contentToSend = encrypted;
         }
       }
       
-      await onSendMessage(contentToSend, 'text');
-      // Recharger les messages après envoi
-      await loadMessages();
+      const sentMessage = await onSendMessage(contentToSend, 'text');
+      
+      // Ajouter le message immédiatement à l'UI (avec le contenu déchiffré)
+      if (sentMessage) {
+        const displayMessage = { ...sentMessage, content: messageToSend };
+        
+        // Store locally
+        storeMessage(displayMessage);
+        
+        setMessages((prev) => {
+          if (prev.some(m => m.id === sentMessage.id)) return prev;
+          return [...prev, displayMessage];
+        });
+        scrollToBottom();
+      }
     } catch (error) {
       console.error('Failed to send message:', error);
       setMessage(messageToSend); // Restaurer le message en cas d'erreur
@@ -179,11 +343,14 @@ export default function ChatWindow({ conversation, onSendMessage, sendTyping, on
     const value = e.target.value;
     setMessage(value);
 
+    console.log('[ChatWindow] handleTyping called, sendTyping:', !!sendTyping, 'conversation:', !!conversation);
+
     if (!sendTyping || !conversation) return;
 
     // Envoyer "est en train d'écrire" si pas déjà envoyé
     if (!isSelfTyping && value.length > 0) {
       setIsSelfTyping(true);
+      console.log('[ChatWindow] Sending typing true for', conversation.id);
       sendTyping(conversation.id, true);
     }
 
@@ -219,8 +386,19 @@ export default function ChatWindow({ conversation, onSendMessage, sendTyping, on
 
     setUploading(true);
     try {
-      await api.uploadMedia(file, conversation.id);
-      await loadMessages();
+      const newMessage = await api.uploadMedia(file, conversation.id);
+      // Ajouter le message localement (le WebSocket l'enverra aux autres)
+      const currentUserId = api.getCurrentUserId();
+      const decryptedMsg = decryptMessageContent(newMessage, currentUserId);
+      
+      // Store locally
+      await storeMessage(decryptedMsg);
+      
+      setMessages((prev) => {
+        if (prev.some(m => m.id === newMessage.id)) return prev;
+        return [...prev, decryptedMsg];
+      });
+      scrollToBottom();
       // Reset input
       if (fileInputRef.current) {
         fileInputRef.current.value = '';
@@ -231,6 +409,112 @@ export default function ChatWindow({ conversation, onSendMessage, sendTyping, on
     } finally {
       setUploading(false);
     }
+  };
+
+  // Démarrer l'enregistrement vocal
+  const startRecording = async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const mediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm' });
+      
+      mediaRecorderRef.current = mediaRecorder;
+      audioChunksRef.current = [];
+      
+      mediaRecorder.ondataavailable = (event) => {
+        if (event.data.size > 0) {
+          audioChunksRef.current.push(event.data);
+        }
+      };
+      
+      mediaRecorder.onstop = async () => {
+        // Arrêter le stream
+        stream.getTracks().forEach(track => track.stop());
+        
+        if (audioChunksRef.current.length > 0) {
+          const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
+          await sendVoiceMessage(audioBlob);
+        }
+      };
+      
+      mediaRecorder.start(100); // Collecter des chunks toutes les 100ms
+      setIsRecording(true);
+      setRecordingDuration(0);
+      
+      // Timer pour afficher la durée
+      recordingTimerRef.current = setInterval(() => {
+        setRecordingDuration(prev => prev + 1);
+      }, 1000);
+      
+    } catch (error) {
+      console.error('Erreur accès microphone:', error);
+      alert('❌ Impossible d\'accéder au microphone. Vérifie les permissions.');
+    }
+  };
+
+  // Arrêter l'enregistrement
+  const stopRecording = () => {
+    if (mediaRecorderRef.current && isRecording) {
+      mediaRecorderRef.current.stop();
+      setIsRecording(false);
+      
+      if (recordingTimerRef.current) {
+        clearInterval(recordingTimerRef.current);
+        recordingTimerRef.current = null;
+      }
+    }
+  };
+
+  // Annuler l'enregistrement
+  const cancelRecording = () => {
+    if (mediaRecorderRef.current && isRecording) {
+      // Arrêter le stream sans envoyer
+      mediaRecorderRef.current.stream.getTracks().forEach(track => track.stop());
+      mediaRecorderRef.current = null;
+      audioChunksRef.current = [];
+      setIsRecording(false);
+      
+      if (recordingTimerRef.current) {
+        clearInterval(recordingTimerRef.current);
+        recordingTimerRef.current = null;
+      }
+      setRecordingDuration(0);
+    }
+  };
+
+  // Envoyer le message vocal
+  const sendVoiceMessage = async (audioBlob: Blob) => {
+    if (!conversation) return;
+    
+    setUploading(true);
+    try {
+      // Créer un fichier à partir du blob
+      const audioFile = new File([audioBlob], `voice_${Date.now()}.webm`, { type: 'audio/webm' });
+      
+      const newMessage = await api.uploadMedia(audioFile, conversation.id, 'voice');
+      const currentUserId = api.getCurrentUserId();
+      const decryptedMsg = decryptMessageContent(newMessage, currentUserId);
+      
+      await storeMessage(decryptedMsg);
+      
+      setMessages((prev) => {
+        if (prev.some(m => m.id === newMessage.id)) return prev;
+        return [...prev, decryptedMsg];
+      });
+      scrollToBottom();
+    } catch (error) {
+      console.error('Erreur envoi message vocal:', error);
+      alert('❌ Erreur lors de l\'envoi du message vocal');
+    } finally {
+      setUploading(false);
+      setRecordingDuration(0);
+    }
+  };
+
+  // Formater la durée d'enregistrement
+  const formatDuration = (seconds: number): string => {
+    const mins = Math.floor(seconds / 60);
+    const secs = seconds % 60;
+    return `${mins}:${secs.toString().padStart(2, '0')}`;
   };
 
   if (!conversation) {
@@ -252,7 +536,7 @@ export default function ChatWindow({ conversation, onSendMessage, sendTyping, on
   );
 
   return (
-    <div className="flex-1 flex flex-col bg-white overflow-hidden min-h-0">
+    <div className="flex-1 flex flex-col bg-white min-h-0 h-full">
       {/* Header */}
       <div className="bg-white border-b border-orange-100 px-3 md:px-6 py-2.5 md:py-4 shadow-sm flex-shrink-0">
         <div className="flex items-center gap-2 md:gap-3">
@@ -283,8 +567,8 @@ export default function ChatWindow({ conversation, onSendMessage, sendTyping, on
         </div>
       </div>
 
-      {/* Messages */}
-      <div className="flex-1 overflow-y-auto p-2 md:p-4 lg:p-6 space-y-2 md:space-y-3 bg-gradient-to-br from-orange-50/30 to-amber-50/30">
+      {/* Messages - scrollable area */}
+      <div className="flex-1 overflow-y-auto overscroll-contain p-2 md:p-4 lg:p-6 space-y-2 md:space-y-3 bg-gradient-to-br from-orange-50/30 to-amber-50/30" style={{ WebkitOverflowScrolling: 'touch' }}>
         {loading ? (
           <div className="flex justify-center items-center h-full">
             <div className="text-gray-500">⏳ Chargement des messages...</div>
@@ -297,27 +581,53 @@ export default function ChatWindow({ conversation, onSendMessage, sendTyping, on
             </div>
           </div>
         ) : (
-          messages.map((msg) => {
+          messages.map((msg, index) => {
             const isOwn = msg.sender_id === api.getCurrentUserId();
+            const displayContent = isClient ? getDisplayContent(msg, api.getCurrentUserId()) : msg.content;
+            const previousMsg = index > 0 ? messages[index - 1] : null;
+            const showDateSeparator = shouldShowDateSeparator(msg, previousMsg);
+            
             return (
-              <div
-                key={msg.id}
-                className={`flex ${isOwn ? 'justify-end' : 'justify-start'}`}
-              >
-                <div
-                  className={`max-w-[85%] md:max-w-[70%] rounded-2xl ${
-                    msg.message_type === 'text' 
-                      ? 'px-3 md:px-4 py-2' 
-                      : 'overflow-hidden'
-                  } ${
-                    isOwn
+              <div key={msg.id}>
+                {/* Séparateur de date */}
+                {showDateSeparator && (
+                  <div className="flex items-center justify-center my-4">
+                    <div className="flex-1 h-px bg-gray-200"></div>
+                    <span className="px-4 text-xs text-gray-500 font-medium bg-transparent">
+                      {formatDateSeparator(new Date(msg.created_at))}
+                    </span>
+                    <div className="flex-1 h-px bg-gray-200"></div>
+                  </div>
+                )}
+                
+                {/* Message */}
+                <div className={`flex ${isOwn ? 'justify-end' : 'justify-start'}`}>
+                  <div
+                    className={`max-w-[85%] md:max-w-[70%] rounded-2xl ${
+                      msg.message_type === 'text' 
+                        ? 'px-3 md:px-4 py-2' 
+                        : msg.message_type === 'voice'
+                        ? 'px-3 py-2'
+                        : 'overflow-hidden'
+                    } ${
+                      isOwn
                       ? 'bg-gradient-to-r from-orange-500 to-amber-500 text-white'
                       : 'bg-white border border-orange-100 text-gray-900'
                   }`}
                 >
                   {msg.message_type === 'text' ? (
-                    <p className="break-words">{decodeHtmlEntities(msg.content)}</p>
+                    <p className="break-words">{decodeHtmlEntities(displayContent)}</p>
+                  ) : msg.message_type === 'voice' ? (
+                    // Message vocal avec lecteur personnalisé
+                    <AudioPlayer
+                      src={msg.media_url?.startsWith('http') 
+                        ? msg.media_url 
+                        : `${process.env.NEXT_PUBLIC_API_URL?.replace('/api', '') || 'http://localhost:9000'}${msg.media_url}`
+                      }
+                      isOwn={isOwn}
+                    />
                   ) : (
+                    // Image
                     <div>
                       <img
                         src={msg.media_url?.startsWith('http') 
@@ -325,7 +635,12 @@ export default function ChatWindow({ conversation, onSendMessage, sendTyping, on
                           : `${process.env.NEXT_PUBLIC_API_URL?.replace('/api', '') || 'http://localhost:9000'}${msg.media_url}`
                         }
                         alt="Image partagée"
-                        className="max-w-[250px] md:max-w-[300px] max-h-[300px] object-contain rounded-t-lg"
+                        className="max-w-[250px] md:max-w-[300px] max-h-[300px] object-contain rounded-t-lg cursor-pointer hover:opacity-90 transition-opacity"
+                        onClick={() => setImageModal(
+                          msg.media_url?.startsWith('http') 
+                            ? msg.media_url 
+                            : `${process.env.NEXT_PUBLIC_API_URL?.replace('/api', '') || 'http://localhost:9000'}${msg.media_url}`
+                        )}
                       />
                       {msg.content && (
                         <p className="px-3 py-2 break-words">{decodeHtmlEntities(msg.content)}</p>
@@ -356,6 +671,7 @@ export default function ChatWindow({ conversation, onSendMessage, sendTyping, on
                   </div>
                 </div>
               </div>
+            </div>
             );
           })
         )}
@@ -376,48 +692,121 @@ export default function ChatWindow({ conversation, onSendMessage, sendTyping, on
 
       {/* Input */}
       <form onSubmit={handleSend} className="bg-white border-t border-orange-100 px-2 md:px-4 lg:px-6 py-2 md:py-3 flex-shrink-0 safe-area-bottom">
-        <div className="flex gap-1.5 md:gap-2 lg:gap-3 items-center">
-          {/* Bouton Image */}
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept="image/*"
-            onChange={handleFileUpload}
-            className="hidden"
-          />
-          <button
-            type="button"
-            onClick={() => fileInputRef.current?.click()}
-            disabled={uploading}
-            className="p-2 text-orange-500 hover:bg-orange-100 rounded-full transition disabled:opacity-50 flex-shrink-0"
-            title="Envoyer une image"
-          >
-            {uploading ? (
-              <span className="text-xl">⏳</span>
-            ) : (
-              <svg className="w-5 h-5 md:w-6 md:h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
+        {isRecording ? (
+          // Interface d'enregistrement vocal
+          <div className="flex gap-2 items-center">
+            <button
+              type="button"
+              onClick={cancelRecording}
+              className="p-2 text-red-500 hover:bg-red-100 rounded-full transition flex-shrink-0"
+              title="Annuler"
+            >
+              <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
               </svg>
-            )}
-          </button>
+            </button>
+            
+            <div className="flex-1 flex items-center gap-3 px-4 py-2 bg-red-50 rounded-2xl border border-red-200">
+              <div className="w-3 h-3 bg-red-500 rounded-full animate-pulse"></div>
+              <span className="text-red-600 font-medium">{formatDuration(recordingDuration)}</span>
+              <div className="flex-1 h-1 bg-red-200 rounded-full overflow-hidden">
+                <div className="h-full bg-red-500 animate-pulse" style={{ width: '100%' }}></div>
+              </div>
+            </div>
+            
+            <button
+              type="button"
+              onClick={stopRecording}
+              className="p-2 bg-gradient-to-r from-orange-500 to-amber-500 text-white rounded-full hover:from-orange-600 hover:to-amber-600 transition shadow-lg flex-shrink-0"
+              title="Envoyer"
+            >
+              <svg className="w-6 h-6" fill="currentColor" viewBox="0 0 24 24">
+                <path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z" />
+              </svg>
+            </button>
+          </div>
+        ) : (
+          // Interface normale de message
+          <div className="flex gap-1.5 md:gap-2 lg:gap-3 items-center">
+            {/* Bouton Image */}
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept="image/*"
+              onChange={handleFileUpload}
+              className="hidden"
+            />
+            <button
+              type="button"
+              onClick={() => fileInputRef.current?.click()}
+              disabled={uploading}
+              className="p-2 text-orange-500 hover:bg-orange-100 rounded-full transition disabled:opacity-50 flex-shrink-0"
+              title="Envoyer une image"
+            >
+              {uploading ? (
+                <span className="text-xl">⏳</span>
+              ) : (
+                <svg className="w-5 h-5 md:w-6 md:h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                </svg>
+              )}
+            </button>
 
-          <input
-            type="text"
-            value={message || ''}
-            onChange={handleTyping}
-            placeholder="Écris ton message..."
-            className="flex-1 px-3 py-2 border border-orange-200 rounded-2xl focus:ring-2 focus:ring-orange-400 focus:border-transparent outline-none transition text-gray-900 placeholder:text-gray-400 text-sm"
-          />
-          <button
-            type="submit"
-            disabled={!message.trim()}
-            className="px-3 md:px-4 lg:px-6 py-2 bg-gradient-to-r from-orange-500 to-amber-500 text-white font-medium rounded-2xl hover:from-orange-600 hover:to-amber-600 disabled:opacity-50 disabled:cursor-not-allowed transition shadow-lg text-sm flex-shrink-0"
-          >
-            <span className="hidden md:inline">Envoyer 🚀</span>
-            <span className="md:hidden">🚀</span>
-          </button>
-        </div>
+            <input
+              type="text"
+              value={message || ''}
+              onChange={handleTyping}
+              placeholder="Écris ton message..."
+              className="flex-1 px-3 py-2 border border-orange-200 rounded-2xl focus:ring-2 focus:ring-orange-400 focus:border-transparent outline-none transition text-gray-900 placeholder:text-gray-400 text-sm"
+            />
+            
+            {/* Bouton Micro ou Envoyer */}
+            {message.trim() ? (
+              <button
+                type="submit"
+                className="px-3 md:px-4 lg:px-6 py-2 bg-gradient-to-r from-orange-500 to-amber-500 text-white font-medium rounded-2xl hover:from-orange-600 hover:to-amber-600 transition shadow-lg text-sm flex-shrink-0"
+              >
+                <span className="hidden md:inline">Envoyer 🚀</span>
+                <span className="md:hidden">🚀</span>
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={startRecording}
+                disabled={uploading}
+                className="p-2 text-orange-500 hover:bg-orange-100 rounded-full transition disabled:opacity-50 flex-shrink-0"
+                title="Enregistrer un message vocal"
+              >
+                <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" />
+                </svg>
+              </button>
+            )}
+          </div>
+        )}
       </form>
+
+      {/* Modal plein écran pour les images */}
+      {imageModal && (
+        <div 
+          className="fixed inset-0 z-50 bg-black/90 flex items-center justify-center p-4"
+          onClick={() => setImageModal(null)}
+        >
+          <button
+            className="absolute top-4 right-4 text-white text-3xl hover:text-gray-300 transition-colors z-10"
+            onClick={() => setImageModal(null)}
+            aria-label="Fermer"
+          >
+            ✕
+          </button>
+          <img
+            src={imageModal}
+            alt="Image en plein écran"
+            className="max-w-full max-h-full object-contain rounded-lg"
+            onClick={(e) => e.stopPropagation()}
+          />
+        </div>
+      )}
     </div>
   );
 }

@@ -1,4 +1,4 @@
-import type { AuthResponse, User, Conversation, Message, Friendship, ApiError } from '@/types';
+import type { AuthResponse, User, Conversation, Message, Friendship, ApiError, DeviceKey } from '@/types';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:9000/api';
 
@@ -93,6 +93,27 @@ class ApiClient {
     });
   }
 
+  async updateProfile(displayName?: string, avatarUrl?: string): Promise<User> {
+    return this.request<User>('/auth/profile', {
+      method: 'PUT',
+      body: JSON.stringify({ display_name: displayName, avatar_url: avatarUrl }),
+    });
+  }
+
+  async changePassword(currentPassword: string, newPassword: string): Promise<{ message: string }> {
+    return this.request<{ message: string }>('/auth/password', {
+      method: 'PUT',
+      body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }),
+    });
+  }
+
+  async deleteAccount(password: string): Promise<{ message: string }> {
+    return this.request<{ message: string }>('/auth/account', {
+      method: 'DELETE',
+      body: JSON.stringify({ password }),
+    });
+  }
+
   async searchUsers(query: string): Promise<User[]> {
     return this.request<User[]>(`/users/search?q=${encodeURIComponent(query)}`);
   }
@@ -151,6 +172,11 @@ class ApiClient {
     return this.request<Message[]>(`/conversations/${conversationId}/messages`);
   }
 
+  async markAsRead(conversationId: string): Promise<void> {
+    // Appeler getMessages déclenche le marquage comme lu côté backend
+    await this.request<Message[]>(`/conversations/${conversationId}/messages`);
+  }
+
   async sendMessage(conversationId: string, content: string, messageType: 'text' | 'image' | 'gif' = 'text'): Promise<Message> {
     return this.request<Message>('/messages', {
       method: 'POST',
@@ -159,12 +185,12 @@ class ApiClient {
   }
 
   // Media
-  async uploadMedia(file: File, conversationId: string, caption?: string): Promise<Message> {
+  async uploadMedia(file: File, conversationId: string, mediaType?: string | 'voice'): Promise<Message> {
     const formData = new FormData();
     formData.append('file', file);
     formData.append('conversation_id', conversationId);
-    if (caption) {
-      formData.append('content', caption);
+    if (mediaType === 'voice') {
+      formData.append('message_type', 'voice');
     }
 
     const headers: HeadersInit = {};
@@ -189,6 +215,46 @@ class ApiClient {
 
   async deleteMessage(messageId: string): Promise<{ message: string }> {
     return this.request<{ message: string }>(`/messages/${messageId}`, {
+      method: 'DELETE',
+    });
+  }
+
+  // E2EE backup API
+  async setE2EEBackup(encryptedKey: string): Promise<{ message: string }> {
+    return this.request<{ message: string }>('/auth/e2ee-backup', {
+      method: 'PUT',
+      body: JSON.stringify({ encrypted_key: encryptedKey }),
+    });
+  }
+
+  async getE2EEBackup(): Promise<{ encrypted_key: string | null }> {
+    return this.request<{ encrypted_key: string | null }>('/auth/e2ee-backup', {
+      method: 'GET',
+    });
+  }
+
+  // Device keys (multi-device E2EE)
+  async registerDevice(deviceId: string, publicKey: string, deviceName?: string): Promise<{ message: string; device_id: string }> {
+    return this.request<{ message: string; device_id: string }>('/devices', {
+      method: 'POST',
+      body: JSON.stringify({ device_id: deviceId, public_key: publicKey, device_name: deviceName }),
+    });
+  }
+
+  async getMyDevices(): Promise<{ devices: DeviceKey[] }> {
+    return this.request<{ devices: DeviceKey[] }>('/devices', {
+      method: 'GET',
+    });
+  }
+
+  async getUserDevices(userId: string): Promise<{ devices: DeviceKey[] }> {
+    return this.request<{ devices: DeviceKey[] }>(`/devices/user/${userId}`, {
+      method: 'GET',
+    });
+  }
+
+  async deleteDevice(deviceId: string): Promise<{ message: string }> {
+    return this.request<{ message: string }>(`/devices/${deviceId}`, {
       method: 'DELETE',
     });
   }

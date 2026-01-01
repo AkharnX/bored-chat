@@ -4,6 +4,22 @@ import type { Conversation } from '@/types';
 import { api } from '@/lib/api';
 import { useState } from 'react';
 import { useAuth } from '@/contexts/AuthContext';
+import { tryDecrypt } from '@/services/crypto';
+
+// Helper pour obtenir la preview du message
+function getMessagePreview(content: string, senderId: string, currentUserId: string | undefined): string {
+  if (!content) return 'Media';
+  
+  // Essayer de déchiffrer
+  const isSender = senderId === currentUserId;
+  const decrypted = tryDecrypt(content, isSender);
+  
+  // Tronquer si trop long
+  if (decrypted.length > 30) {
+    return decrypted.slice(0, 30) + '...';
+  }
+  return decrypted;
+}
 
 interface Props {
   conversations: Conversation[];
@@ -82,7 +98,11 @@ export default function ConversationList({ conversations, selectedConversation, 
                 </div>
                 {conversation.messages?.[0] && (
                   <p className="text-sm text-gray-600 truncate">
-                    {conversation.messages[0].content || 'Media'}
+                    {getMessagePreview(
+                      conversation.messages[0].content,
+                      conversation.messages[0].sender_id,
+                      currentUser?.id
+                    )}
                   </p>
                 )}
               </div>

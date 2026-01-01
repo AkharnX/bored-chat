@@ -5,6 +5,7 @@ import { api } from '@/lib/api';
 import type { WSMessage, Message } from '@/types';
 
 const WS_URL = process.env.NEXT_PUBLIC_WS_URL || 'ws://localhost:9000/api/ws';
+const PING_INTERVAL = 25000; // Send ping every 25 seconds to keep connection alive
 
 export function useWebSocket() {
   const [connected, setConnected] = useState(false);
@@ -12,6 +13,7 @@ export function useWebSocket() {
   const [typingUsers, setTypingUsers] = useState<Record<string, string>>({});
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const pingIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const messageCallbackRef = useRef<((msg: Message) => void) | null>(null);
   const typingCallbackRef = useRef<((userId: string, isTyping: boolean) => void) | null>(null);
   const readCallbackRef = useRef<((conversationId: string) => void) | null>(null);
@@ -20,20 +22,41 @@ export function useWebSocket() {
     const token = api.getToken();
     if (!token) return;
 
+    // Clear any existing connection
+    if (wsRef.current) {
+      wsRef.current.close();
+    }
+
     try {
       const wsUrl = `${WS_URL}?token=${token}`;
+      console.log('[WebSocket] Connecting to:', wsUrl);
       const ws = new WebSocket(wsUrl);
 
       ws.onopen = () => {
+        console.log('[WebSocket] Connected');
         setConnected(true);
+        
+        // Start ping interval to keep connection alive
+        if (pingIntervalRef.current) {
+          clearInterval(pingIntervalRef.current);
+        }
+        pingIntervalRef.current = setInterval(() => {
+          if (ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ type: 'ping' }));
+          }
+        }, PING_INTERVAL);
       };
 
       ws.onmessage = (event) => {
         try {
           const data: WSMessage = JSON.parse(event.data);
           
+          // Ignore pong responses
+          if (data.type === 'pong') return;
+          
           if (data.type === 'message' && data.data) {
             const newMessage = data.data as Message;
+            console.log('[WebSocket] New message received:', newMessage.id);
             setMessages((prev) => [...prev, newMessage]);
             if (messageCallbackRef.current) {
               messageCallbackRef.current(newMessage);
@@ -54,33 +77,56 @@ export function useWebSocket() {
               typingCallbackRef.current(user_id, is_typing);
             }
           } else if (data.type === 'read') {
-            if (readCallbackRef.current && data.conversation_id) {
-              readCallbackRef.current(data.conversation_id);
+            console.log('[WebSocket] Read event received:', JSON.stringify(data));
+            const convId = data.conversation_id?.toString() || (data.data?.conversation_id?.toString());
+            console.log('[WebSocket] Read event conversationId:', convId);
+            if (readCallbackRef.current && convId) {
+              readCallbackRef.current(convId);
             }
           }
         } catch (error) {
-          console.error('WebSocket message parse error:', error);
+          console.error('[WebSocket] Message parse error:', error);
         }
       };
 
-      ws.onerror = () => {};
+      ws.onerror = (error) => {
+        console.error('[WebSocket] Error:', error);
+      };
 
-      ws.onclose = () => {
+      ws.onclose = (event) => {
+        console.log('[WebSocket] Disconnected, code:', event.code);
         setConnected(false);
+        
+        // Clear ping interval
+        if (pingIntervalRef.current) {
+          clearInterval(pingIntervalRef.current);
+          pingIntervalRef.current = null;
+        }
+        
+        // Reconnect after 3 seconds
         reconnectTimeoutRef.current = setTimeout(() => {
+          console.log('[WebSocket] Reconnecting...');
           connect();
         }, 3000);
       };
 
       wsRef.current = ws;
     } catch (error) {
-      console.error('WebSocket connection error:', error);
+      console.error('[WebSocket] Connection error:', error);
     }
   }, []);
 
   const disconnect = useCallback(() => {
+    console.log('[WebSocket] Disconnecting...');
+    
     if (reconnectTimeoutRef.current) {
       clearTimeout(reconnectTimeoutRef.current);
+      reconnectTimeoutRef.current = null;
+    }
+    
+    if (pingIntervalRef.current) {
+      clearInterval(pingIntervalRef.current);
+      pingIntervalRef.current = null;
     }
     
     if (wsRef.current) {
@@ -93,11 +139,15 @@ export function useWebSocket() {
 
   const sendMessage = useCallback((message: Partial<WSMessage>) => {
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      console.log('[WebSocket] Sending:', message);
       wsRef.current.send(JSON.stringify(message));
+    } else {
+      console.warn('[WebSocket] Cannot send, not connected');
     }
   }, []);
 
   const sendTyping = useCallback((conversationId: string, isTyping: boolean) => {
+    console.log('[WebSocket] Sending typing:', conversationId, isTyping);
     sendMessage({
       type: 'typing',
       conversation_id: conversationId,

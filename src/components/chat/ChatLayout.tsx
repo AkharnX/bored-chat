@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect, useRef, useCallback } from 'react';
+import { useRouter } from 'next/navigation';
 import { useAuth } from '@/contexts/AuthContext';
 import { api } from '@/lib/api';
 import type { Conversation, Friendship, Message } from '@/types';
@@ -9,9 +10,11 @@ import ChatWindow from './ChatWindow';
 import FriendsPanel from './FriendsPanel';
 import { useWebSocket } from '@/hooks/useWebSocket';
 import { useNotifications } from '@/hooks/useNotifications';
+import { tryDecrypt } from '@/services/crypto';
 
 export default function ChatLayout() {
   const { user, logout } = useAuth();
+  const router = useRouter();
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [selectedConversation, setSelectedConversation] = useState<Conversation | null>(null);
   const [showFriends, setShowFriends] = useState(false);
@@ -20,6 +23,45 @@ export default function ChatLayout() {
   const [notificationRequested, setNotificationRequested] = useState(false);
   const conversationsRef = useRef<Conversation[]>([]);
   const selectedConversationIdRef = useRef<string | null>(null);
+
+  // Debug log for WebSocket connection
+  useEffect(() => {
+    console.log('[ChatLayout] WebSocket connected:', connected, 'sendTyping exists:', !!sendTyping);
+  }, [connected, sendTyping]);
+
+  // Fonction pour jouer un son de notification programmatique
+  const playNotificationSound = useCallback(() => {
+    try {
+      const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
+      
+      // Créer un oscillateur pour un son de notification doux
+      const oscillator = audioContext.createOscillator();
+      const gainNode = audioContext.createGain();
+      
+      oscillator.connect(gainNode);
+      gainNode.connect(audioContext.destination);
+      
+      // Son de notification: deux notes rapides
+      oscillator.frequency.setValueAtTime(880, audioContext.currentTime); // La 5
+      oscillator.frequency.setValueAtTime(1047, audioContext.currentTime + 0.1); // Do 6
+      
+      oscillator.type = 'sine';
+      
+      // Volume avec fade out
+      gainNode.gain.setValueAtTime(0.3, audioContext.currentTime);
+      gainNode.gain.exponentialRampToValueAtTime(0.01, audioContext.currentTime + 0.3);
+      
+      oscillator.start(audioContext.currentTime);
+      oscillator.stop(audioContext.currentTime + 0.3);
+      
+      // Fermer le contexte audio après le son
+      setTimeout(() => {
+        audioContext.close();
+      }, 500);
+    } catch (error) {
+      console.log('Could not play notification sound:', error);
+    }
+  }, []);
 
   // Mettre à jour les refs quand les valeurs changent
   useEffect(() => {
@@ -58,24 +100,24 @@ export default function ChatLayout() {
       const conversation = conversationsRef.current.find(c => c.id === msg.conversation_id);
       const sender = conversation?.participants?.find(p => p.user_id === msg.sender_id)?.user;
       const senderName = sender?.display_name || sender?.username || 'Quelqu\'un';
+      const decryptedBody = msg.message_type === 'text'
+        ? tryDecrypt(msg.content, false)
+        : '📷 Image';
 
       if (permission === 'granted') {
         showNotification(`💬 ${senderName}`, {
-          body: msg.message_type === 'text' ? msg.content : '📷 Image',
+          body: decryptedBody,
           tag: msg.conversation_id,
           requireInteraction: false,
         });
       }
 
-      try {
-        const audio = new Audio('/notification.mp3');
-        audio.volume = 0.5;
-        audio.play().catch(() => {});
-      } catch {}
+      // Jouer le son de notification
+      playNotificationSound();
       
       loadConversations();
     });
-  }, [onNewMessage, user?.id, permission, showNotification]);
+  }, [onNewMessage, user?.id, permission, showNotification, playNotificationSound]);
 
   const loadConversations = useCallback(async () => {
     try {
@@ -90,22 +132,24 @@ export default function ChatLayout() {
     loadConversations();
   }, [loadConversations]);
 
-  const handleSendMessage = useCallback(async (content: string, type: 'text' | 'image' | 'gif') => {
-    if (!selectedConversation) return;
+  const handleSendMessage = useCallback(async (content: string, type: 'text' | 'image' | 'gif'): Promise<Message | null> => {
+    if (!selectedConversation) return null;
 
     try {
-      await api.sendMessage(selectedConversation.id, content, type);
+      const message = await api.sendMessage(selectedConversation.id, content, type);
       loadConversations();
+      return message;
     } catch (error) {
       console.error('Failed to send message:', error);
       alert('❌ Erreur lors de l\'envoi du message');
+      return null;
     }
   }, [selectedConversation, loadConversations]);
 
   return (
-    <div className="h-[100dvh] flex flex-col md:flex-row bg-gray-100 overflow-hidden">
-      <div className={`w-full md:w-80 bg-white border-r border-gray-200 flex flex-col flex-1 md:flex-initial ${
-        selectedConversation ? 'hidden md:flex' : 'flex'
+    <div className="h-[100dvh] flex flex-col md:flex-row bg-gray-100">
+      <div className={`w-full md:w-80 bg-white border-r border-gray-200 flex flex-col md:h-full ${
+        selectedConversation ? 'hidden md:flex' : 'flex flex-1'
       }`}>
         <div className="p-2 md:p-4 border-b border-orange-100 bg-gradient-to-r from-orange-50 to-amber-50 flex-shrink-0">
           <div className="flex items-center justify-between mb-2 md:mb-4">
@@ -121,7 +165,8 @@ export default function ChatLayout() {
                 </div>
               </div>
             </div>
-            <div className="flex items-center space-x-1">
+            {/* Boutons desktop uniquement */}
+            <div className="hidden md:flex items-center space-x-1">
               {isSupported && permission !== 'granted' && (
                 <button
                   onClick={requestPermission}
@@ -141,6 +186,16 @@ export default function ChatLayout() {
                 </span>
               )}
               <button
+                onClick={() => router.push('/settings')}
+                className="p-1.5 md:p-2 text-gray-600 hover:text-orange-600 hover:bg-orange-100 rounded-lg transition"
+                title="Paramètres"
+              >
+                <svg className="w-4 h-4 md:w-5 md:h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                </svg>
+              </button>
+              <button
                 onClick={logout}
                 className="p-1.5 md:p-2 text-gray-600 hover:text-orange-600 hover:bg-orange-100 rounded-lg transition"
                 title="Déconnexion"
@@ -152,7 +207,8 @@ export default function ChatLayout() {
             </div>
           </div>
 
-          <div className="flex space-x-1.5 md:space-x-2">
+          {/* Tabs desktop */}
+          <div className="hidden md:flex space-x-1.5 md:space-x-2">
             <button
               onClick={() => setShowFriends(false)}
               className={`flex-1 py-1.5 px-3 md:py-2 md:px-4 rounded-lg font-medium transition text-sm ${
@@ -173,7 +229,7 @@ export default function ChatLayout() {
         </div>
 
         {/* Content */}
-        <div className="flex-1 overflow-y-auto">
+        <div className="flex-1 overflow-y-auto pb-16 md:pb-0">
           {showFriends ? (
             <FriendsPanel onConversationCreated={loadConversations} />
           ) : (
@@ -188,8 +244,8 @@ export default function ChatLayout() {
       </div>
 
       {/* Main chat area - Mobile: pleine largeur quand sélectionnée */}
-      <div className={`flex-1 flex flex-col min-h-0 ${
-        selectedConversation ? 'flex' : 'hidden md:flex'
+      <div className={`flex-1 flex flex-col min-h-0 h-full ${
+        selectedConversation ? 'flex absolute inset-0 md:relative md:inset-auto z-10' : 'hidden md:flex'
       }`}>
         {selectedConversation ? (
           <ChatWindow 
@@ -215,6 +271,46 @@ export default function ChatLayout() {
           </div>
         )}
       </div>
+
+      {/* Bottom Navigation Mobile */}
+      <nav className={`md:hidden fixed bottom-0 left-0 right-0 bg-white border-t border-gray-200 z-50 safe-area-pb ${
+        selectedConversation ? 'hidden' : 'block'
+      }`}>
+        <div className="flex items-center justify-around py-2">
+          <button
+            onClick={() => setShowFriends(false)}
+            className={`flex flex-col items-center px-4 py-2 rounded-lg transition ${
+              !showFriends ? 'text-orange-500' : 'text-gray-500'
+            }`}
+          >
+            <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
+            </svg>
+            <span className="text-xs mt-1">Chats</span>
+          </button>
+          <button
+            onClick={() => setShowFriends(true)}
+            className={`flex flex-col items-center px-4 py-2 rounded-lg transition ${
+              showFriends ? 'text-orange-500' : 'text-gray-500'
+            }`}
+          >
+            <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z" />
+            </svg>
+            <span className="text-xs mt-1">Amis</span>
+          </button>
+          <button
+            onClick={() => router.push('/settings')}
+            className="flex flex-col items-center px-4 py-2 rounded-lg transition text-gray-500"
+          >
+            <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+            </svg>
+            <span className="text-xs mt-1">Paramètres</span>
+          </button>
+        </div>
+      </nav>
     </div>
   );
 }
