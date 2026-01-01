@@ -4,9 +4,48 @@ import { useState, useEffect, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '@/contexts/AuthContext';
 import { api } from '@/lib/api';
+import { useNotifications } from '@/hooks/useNotifications';
 
 export default function SettingsPage() {
   const { user, isAuthenticated, loading, logout, refreshUser } = useAuth();
+  const { permission, requestPermission, isSupported } = useNotifications();
+  const [notifStatus, setNotifStatus] = useState('');
+  const [notificationsEnabled, setNotificationsEnabled] = useState(true);
+
+  // Charger l'état des notifications depuis localStorage
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      const saved = localStorage.getItem('notifications_enabled');
+      if (saved !== null) {
+        setNotificationsEnabled(saved === 'true');
+      }
+    }
+  }, []);
+
+  const handleToggleNotifications = async () => {
+    if (permission !== 'granted') {
+      // Si pas encore de permission, la demander
+      if (!isSupported) {
+        setNotifStatus('Notifications non supportées sur cet appareil.');
+        return;
+      }
+      const granted = await requestPermission();
+      if (granted) {
+        setNotificationsEnabled(true);
+        localStorage.setItem('notifications_enabled', 'true');
+        setNotifStatus('Notifications activées !');
+      } else {
+        setNotifStatus('Permission refusée par le navigateur.');
+      }
+    } else {
+      // Toggle l'état
+      const newState = !notificationsEnabled;
+      setNotificationsEnabled(newState);
+      localStorage.setItem('notifications_enabled', String(newState));
+      setNotifStatus(newState ? 'Notifications activées !' : 'Notifications désactivées.');
+    }
+  };
+
   const router = useRouter();
   
   // Profile form
@@ -138,6 +177,49 @@ export default function SettingsPage() {
           </button>
           <h1 className="text-2xl font-bold text-gray-900">Paramètres</h1>
           <div className="w-20"></div>
+        </div>
+
+        {/* Notifications Section */}
+        <div className="bg-white rounded-2xl shadow-lg p-6 mb-6">
+          <h2 className="text-lg font-semibold text-gray-900 mb-4 flex items-center">
+            <svg className="w-5 h-5 mr-2 text-orange-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V4a2 2 0 10-4 0v1.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9" />
+            </svg>
+            Notifications
+          </h2>
+          <div className="space-y-3">
+            <p className="text-sm text-gray-700">Gérez les notifications pour recevoir des alertes de nouveaux messages.</p>
+            
+            <div className="flex items-center justify-between">
+              <span className="text-sm text-gray-600">
+                {permission === 'granted' 
+                  ? (notificationsEnabled ? '🔔 Notifications actives' : '🔕 Notifications désactivées')
+                  : '🔕 Notifications non autorisées'
+                }
+              </span>
+              <button
+                onClick={handleToggleNotifications}
+                className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
+                  permission === 'granted' && notificationsEnabled
+                    ? 'bg-orange-500'
+                    : 'bg-gray-300'
+                }`}
+              >
+                <span
+                  className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                    permission === 'granted' && notificationsEnabled ? 'translate-x-6' : 'translate-x-1'
+                  }`}
+                />
+              </button>
+            </div>
+            
+            {permission === 'denied' && (
+              <p className="text-xs text-red-500">
+                Les notifications ont été bloquées. Modifiez les paramètres de votre navigateur pour les réactiver.
+              </p>
+            )}
+            {notifStatus && <p className="text-xs text-gray-500">{notifStatus}</p>}
+          </div>
         </div>
 
         {/* Profile Section */}

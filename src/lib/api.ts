@@ -184,6 +184,13 @@ class ApiClient {
     });
   }
 
+  async sendMessageWithReply(conversationId: string, content: string, messageType: 'text' | 'image' | 'gif' = 'text', replyToId: string): Promise<Message> {
+    return this.request<Message>('/messages', {
+      method: 'POST',
+      body: JSON.stringify({ conversation_id: conversationId, content, message_type: messageType, reply_to_id: replyToId }),
+    });
+  }
+
   // Media
   async uploadMedia(file: File, conversationId: string, mediaType?: string | 'voice'): Promise<Message> {
     const formData = new FormData();
@@ -216,6 +223,13 @@ class ApiClient {
   async deleteMessage(messageId: string): Promise<{ message: string }> {
     return this.request<{ message: string }>(`/messages/${messageId}`, {
       method: 'DELETE',
+    });
+  }
+
+  async editMessage(messageId: string, content: string): Promise<Message> {
+    return this.request<Message>(`/messages/${messageId}`, {
+      method: 'PUT',
+      body: JSON.stringify({ content }),
     });
   }
 

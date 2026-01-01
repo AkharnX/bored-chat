@@ -17,6 +17,8 @@ export function useWebSocket() {
   const messageCallbackRef = useRef<((msg: Message) => void) | null>(null);
   const typingCallbackRef = useRef<((userId: string, isTyping: boolean) => void) | null>(null);
   const readCallbackRef = useRef<((conversationId: string) => void) | null>(null);
+  const messageEditedCallbackRef = useRef<((msg: Message) => void) | null>(null);
+  const messageDeletedCallbackRef = useRef<((messageId: string, conversationId: string) => void) | null>(null);
 
   const connect = useCallback(() => {
     const token = api.getToken();
@@ -29,11 +31,9 @@ export function useWebSocket() {
 
     try {
       const wsUrl = `${WS_URL}?token=${token}`;
-      console.log('[WebSocket] Connecting to:', wsUrl);
       const ws = new WebSocket(wsUrl);
 
       ws.onopen = () => {
-        console.log('[WebSocket] Connected');
         setConnected(true);
         
         // Start ping interval to keep connection alive
@@ -56,7 +56,6 @@ export function useWebSocket() {
           
           if (data.type === 'message' && data.data) {
             const newMessage = data.data as Message;
-            console.log('[WebSocket] New message received:', newMessage.id);
             setMessages((prev) => [...prev, newMessage]);
             if (messageCallbackRef.current) {
               messageCallbackRef.current(newMessage);
@@ -77,11 +76,19 @@ export function useWebSocket() {
               typingCallbackRef.current(user_id, is_typing);
             }
           } else if (data.type === 'read') {
-            console.log('[WebSocket] Read event received:', JSON.stringify(data));
             const convId = data.conversation_id?.toString() || (data.data?.conversation_id?.toString());
-            console.log('[WebSocket] Read event conversationId:', convId);
             if (readCallbackRef.current && convId) {
               readCallbackRef.current(convId);
+            }
+          } else if (data.type === 'message_edited' && data.data) {
+            const editedMessage = data.data as Message;
+            if (messageEditedCallbackRef.current) {
+              messageEditedCallbackRef.current(editedMessage);
+            }
+          } else if (data.type === 'message_deleted' && data.data) {
+            const { message_id, conversation_id } = data.data as { message_id: string; conversation_id: string };
+            if (messageDeletedCallbackRef.current) {
+              messageDeletedCallbackRef.current(message_id, conversation_id);
             }
           }
         } catch (error) {
@@ -94,7 +101,6 @@ export function useWebSocket() {
       };
 
       ws.onclose = (event) => {
-        console.log('[WebSocket] Disconnected, code:', event.code);
         setConnected(false);
         
         // Clear ping interval
@@ -105,7 +111,6 @@ export function useWebSocket() {
         
         // Reconnect after 3 seconds
         reconnectTimeoutRef.current = setTimeout(() => {
-          console.log('[WebSocket] Reconnecting...');
           connect();
         }, 3000);
       };
@@ -117,8 +122,6 @@ export function useWebSocket() {
   }, []);
 
   const disconnect = useCallback(() => {
-    console.log('[WebSocket] Disconnecting...');
-    
     if (reconnectTimeoutRef.current) {
       clearTimeout(reconnectTimeoutRef.current);
       reconnectTimeoutRef.current = null;
@@ -139,15 +142,11 @@ export function useWebSocket() {
 
   const sendMessage = useCallback((message: Partial<WSMessage>) => {
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-      console.log('[WebSocket] Sending:', message);
       wsRef.current.send(JSON.stringify(message));
-    } else {
-      console.warn('[WebSocket] Cannot send, not connected');
     }
   }, []);
 
   const sendTyping = useCallback((conversationId: string, isTyping: boolean) => {
-    console.log('[WebSocket] Sending typing:', conversationId, isTyping);
     sendMessage({
       type: 'typing',
       conversation_id: conversationId,
@@ -170,6 +169,14 @@ export function useWebSocket() {
     readCallbackRef.current = callback;
   }, []);
 
+  const onMessageEdited = useCallback((callback: (msg: Message) => void) => {
+    messageEditedCallbackRef.current = callback;
+  }, []);
+
+  const onMessageDeleted = useCallback((callback: (messageId: string, conversationId: string) => void) => {
+    messageDeletedCallbackRef.current = callback;
+  }, []);
+
   useEffect(() => {
     connect();
     return () => disconnect();
@@ -184,6 +191,8 @@ export function useWebSocket() {
     onNewMessage,
     onTyping,
     onRead,
+    onMessageEdited,
+    onMessageDeleted,
     connect,
     disconnect,
   };

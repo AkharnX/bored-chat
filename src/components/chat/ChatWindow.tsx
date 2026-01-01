@@ -10,7 +10,8 @@ import {
   getLocalMessages, 
   storeMessages, 
   storeMessage,
-  hasLocalMessage 
+  hasLocalMessage,
+  deleteLocalMessage
 } from '@/services/messageStore';
 import AudioPlayer from './AudioPlayer';
 
@@ -28,7 +29,6 @@ function decryptMessageContent(msg: Message, currentUserId: string | null): Mess
   if (typeof window === 'undefined') return msg;
   
   const isSender = msg.sender_id === currentUserId;
-  console.log('[E2EE] decryptMessageContent - msgId:', msg.id, 'sender:', msg.sender_id, 'currentUser:', currentUserId, 'isSender:', isSender);
   const decrypted = tryDecrypt(msg.content, isSender);
   return { ...msg, content: decrypted };
 }
@@ -79,10 +79,12 @@ interface ChatWindowProps {
   onNewMessage?: (callback: (msg: Message) => void) => void;
   onTyping?: (callback: (userId: string, isTyping: boolean) => void) => void;
   onRead?: (callback: (conversationId: string) => void) => void;
+  onMessageEdited?: (callback: (msg: Message) => void) => void;
+  onMessageDeleted?: (callback: (messageId: string, conversationId: string) => void) => void;
   onBack?: () => void; // Pour fermer la conversation sur mobile
 }
 
-export default function ChatWindow({ conversation, onSendMessage, sendTyping, onNewMessage, onTyping, onRead, onBack }: ChatWindowProps) {
+export default function ChatWindow({ conversation, onSendMessage, sendTyping, onNewMessage, onTyping, onRead, onMessageEdited, onMessageDeleted, onBack }: ChatWindowProps) {
   const [message, setMessage] = useState('');
   const [messages, setMessages] = useState<Message[]>([]);
   const [loading, setLoading] = useState(false);
@@ -101,6 +103,13 @@ export default function ChatWindow({ conversation, onSendMessage, sendTyping, on
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const currentConversationIdRef = useRef<string | null>(null);
+  
+  // Message actions state
+  const [selectedMsgId, setSelectedMsgId] = useState<string | null>(null);
+  const [replyTo, setReplyTo] = useState<Message | null>(null);
+  const [editingMsg, setEditingMsg] = useState<Message | null>(null);
+  const [editText, setEditText] = useState('');
+  const longPressTimerRef = useRef<NodeJS.Timeout | null>(null);
 
   // Ensure we're on client side before decrypting
   useEffect(() => {
@@ -125,24 +134,17 @@ export default function ChatWindow({ conversation, onSendMessage, sendTyping, on
     
     const handleNewMessage = (msg: Message) => {
       const currentConvId = currentConversationIdRef.current;
-      console.log('[ChatWindow] handleNewMessage - msg.conversation_id:', msg.conversation_id, 'currentConvId:', currentConvId);
       
-      if (!currentConvId) {
-        console.log('[ChatWindow] No current conversation, ignoring');
-        return;
-      }
+      if (!currentConvId) return;
       
       if (msg.conversation_id === currentConvId) {
-        console.log('[ChatWindow] Message matches current conversation, adding to UI');
         // Decrypt the E2EE message
         const currentUserId = api.getCurrentUserId();
         const decryptedMsg = decryptMessageContent(msg, currentUserId);
         
         // Store locally only if decryption succeeded
         if (!decryptedMsg.content.includes('🔒')) {
-          storeMessage(decryptedMsg).then(() => {
-            console.log('[E2EE] Message stored locally');
-          });
+          storeMessage(decryptedMsg);
         }
         
         setMessages((prev) => {
@@ -153,12 +155,8 @@ export default function ChatWindow({ conversation, onSendMessage, sendTyping, on
 
         // Marquer comme lu si ce n'est pas notre message
         if (msg.sender_id !== currentUserId) {
-          api.markAsRead(currentConvId).catch(err => {
-            console.error('[ChatWindow] Failed to mark as read:', err);
-          });
+          api.markAsRead(currentConvId).catch(() => {});
         }
-      } else {
-        console.log('[ChatWindow] Message for different conversation, ignoring');
       }
     };
 
@@ -185,7 +183,6 @@ export default function ChatWindow({ conversation, onSendMessage, sendTyping, on
     if (!onRead || !conversation) return;
 
     const handleRead = (conversationId: string) => {
-      console.log('[ChatWindow] handleRead called for conversation:', conversationId, 'current:', conversation.id);
       if (conversationId === conversation.id) {
         setMessages((prev) =>
           prev.map((msg) =>
@@ -199,6 +196,45 @@ export default function ChatWindow({ conversation, onSendMessage, sendTyping, on
 
     onRead(handleRead);
   }, [onRead, conversation?.id]);
+
+  // Handle message edited from WebSocket
+  useEffect(() => {
+    if (!onMessageEdited || !conversation) return;
+
+    const handleMessageEdited = (editedMsg: Message) => {
+      if (editedMsg.conversation_id === conversation.id) {
+        // Decrypt the edited message
+        const currentUserId = api.getCurrentUserId();
+        const decryptedMsg = decryptMessageContent(editedMsg, currentUserId);
+        
+        setMessages((prev) =>
+          prev.map((msg) =>
+            msg.id === editedMsg.id ? decryptedMsg : msg
+          )
+        );
+        
+        // Mettre à jour le cache local IndexedDB
+        storeMessage(decryptedMsg);
+      }
+    };
+
+    onMessageEdited(handleMessageEdited);
+  }, [onMessageEdited, conversation?.id]);
+
+  // Handle message deleted from WebSocket
+  useEffect(() => {
+    if (!onMessageDeleted || !conversation) return;
+
+    const handleMessageDeleted = (messageId: string, conversationId: string) => {
+      if (conversationId === conversation.id) {
+        setMessages((prev) => prev.filter((msg) => msg.id !== messageId));
+        // Supprimer du cache local IndexedDB
+        deleteLocalMessage(messageId);
+      }
+    };
+
+    onMessageDeleted(handleMessageDeleted);
+  }, [onMessageDeleted, conversation?.id]);
 
   // Initialize IndexedDB on mount
   useEffect(() => {
@@ -241,10 +277,25 @@ export default function ChatWindow({ conversation, onSendMessage, sendTyping, on
         
         if (localMsg && !localMsg.content.includes('🔒')) {
           // Already have this message locally (already decrypted successfully)
-          processedMessages.push(localMsg);
+          // Merge with server data to get reply_to and other relations
+          processedMessages.push({
+            ...serverMsg,
+            content: localMsg.content, // Keep decrypted content from local
+            reply_to: serverMsg.reply_to ? {
+              ...serverMsg.reply_to,
+              content: tryDecrypt(serverMsg.reply_to.content, serverMsg.reply_to.sender_id === currentUserId)
+            } : undefined
+          });
         } else {
           // New message or failed decryption before - try to decrypt again
           const decryptedMsg = decryptMessageContent(serverMsg, currentUserId);
+          // Also decrypt reply_to content if exists
+          if (serverMsg.reply_to) {
+            decryptedMsg.reply_to = {
+              ...serverMsg.reply_to,
+              content: tryDecrypt(serverMsg.reply_to.content, serverMsg.reply_to.sender_id === currentUserId)
+            };
+          }
           processedMessages.push(decryptedMsg);
           
           // Only store if decryption was successful (not a locked message)
@@ -257,13 +308,11 @@ export default function ChatWindow({ conversation, onSendMessage, sendTyping, on
       // 4. Store new messages locally for future use
       if (newMessagesToStore.length > 0) {
         await storeMessages(newMessagesToStore);
-        console.log(`[E2EE] Stored ${newMessagesToStore.length} new messages locally`);
       }
       
       setMessages(processedMessages);
       scrollToBottom();
     } catch (error) {
-      console.error('Failed to load messages:', error);
       // If server fails, at least show local messages
       const localMessages = await getLocalMessages(conversation.id);
       if (localMessages.length > 0) {
@@ -283,7 +332,9 @@ export default function ChatWindow({ conversation, onSendMessage, sendTyping, on
     if (!message.trim() || !conversation) return;
 
     const messageToSend = message;
+    const replyToId = replyTo?.id || null;
     setMessage(''); // Vider immédiatement pour UX fluide
+    setReplyTo(null); // Reset reply
 
     // Arrêter l'indicateur "est en train d'écrire"
     if (sendTyping && conversation) {
@@ -318,11 +369,14 @@ export default function ChatWindow({ conversation, onSendMessage, sendTyping, on
         }
       }
       
-      const sentMessage = await onSendMessage(contentToSend, 'text');
+      // Envoyer avec reply_to_id si on répond à un message
+      const sentMessage = replyToId 
+        ? await api.sendMessageWithReply(conversation.id, contentToSend, 'text', replyToId)
+        : await onSendMessage(contentToSend, 'text');
       
       // Ajouter le message immédiatement à l'UI (avec le contenu déchiffré)
       if (sentMessage) {
-        const displayMessage = { ...sentMessage, content: messageToSend };
+        const displayMessage = { ...sentMessage, content: messageToSend, reply_to_id: replyToId || undefined };
         
         // Store locally
         storeMessage(displayMessage);
@@ -343,14 +397,11 @@ export default function ChatWindow({ conversation, onSendMessage, sendTyping, on
     const value = e.target.value;
     setMessage(value);
 
-    console.log('[ChatWindow] handleTyping called, sendTyping:', !!sendTyping, 'conversation:', !!conversation);
-
     if (!sendTyping || !conversation) return;
 
     // Envoyer "est en train d'écrire" si pas déjà envoyé
     if (!isSelfTyping && value.length > 0) {
       setIsSelfTyping(true);
-      console.log('[ChatWindow] Sending typing true for', conversation.id);
       sendTyping(conversation.id, true);
     }
 
@@ -517,6 +568,122 @@ export default function ChatWindow({ conversation, onSendMessage, sendTyping, on
     return `${mins}:${secs.toString().padStart(2, '0')}`;
   };
 
+  // Message actions handlers
+  const handleReply = (msg: Message) => {
+    setReplyTo(msg);
+    setSelectedMsgId(null);
+  };
+
+  const handleEdit = (msg: Message) => {
+    setEditingMsg(msg);
+    setEditText(isClient ? getDisplayContent(msg, api.getCurrentUserId()) : msg.content);
+    setSelectedMsgId(null);
+  };
+
+  const handleDelete = async (msg: Message) => {
+    if (!confirm('Supprimer ce message ?')) return;
+    try {
+      await api.deleteMessage(msg.id);
+      setMessages((prev) => prev.filter((m) => m.id !== msg.id));
+      // Supprimer du cache local IndexedDB
+      deleteLocalMessage(msg.id);
+    } catch (error) {
+      console.error('Erreur suppression message:', error);
+      alert('❌ Erreur lors de la suppression');
+    }
+    setSelectedMsgId(null);
+  };
+
+  const handleSaveEdit = async () => {
+    if (!editingMsg || !editText.trim() || !conversation) return;
+    try {
+      // Chiffrer le message édité comme pour l'envoi
+      const currentUserId = api.getCurrentUserId();
+      const otherParticipant = conversation.participants?.find(
+        p => p.user_id !== currentUserId
+      );
+      
+      let contentToSend = editText;
+      
+      // Tenter le chiffrement multi-device d'abord
+      if (otherParticipant?.user_id && currentUserId) {
+        const encrypted = await encryptMessageMultiDevice(
+          editText,
+          otherParticipant.user_id,
+          currentUserId,
+          otherParticipant.user?.public_key
+        );
+        if (encrypted) {
+          contentToSend = encrypted;
+        }
+      } else if (otherParticipant?.user?.public_key) {
+        // Fallback: chiffrement legacy
+        const encrypted = encryptForStorage(editText, otherParticipant.user.public_key);
+        if (encrypted) {
+          contentToSend = encrypted;
+        }
+      }
+      
+      await api.editMessage(editingMsg.id, contentToSend);
+      
+      // Mettre à jour localement avec le texte déchiffré pour l'affichage
+      const updatedMsg = { ...editingMsg, content: editText, is_edited: true };
+      setMessages((prev) =>
+        prev.map((m) => (m.id === editingMsg.id ? updatedMsg : m))
+      );
+      
+      // Mettre à jour le cache local IndexedDB
+      storeMessage(updatedMsg);
+      
+      setEditingMsg(null);
+      setEditText('');
+    } catch (error) {
+      console.error('Erreur modification message:', error);
+      alert('❌ Erreur lors de la modification');
+    }
+  };
+
+  const handleCancelEdit = () => {
+    setEditingMsg(null);
+    setEditText('');
+  };
+
+  const handleCancelReply = () => {
+    setReplyTo(null);
+  };
+
+  // Touch handlers for mobile long press
+  const handleTouchStart = (msgId: string) => {
+    longPressTimerRef.current = setTimeout(() => {
+      setSelectedMsgId(msgId);
+    }, 400); // Réduit à 400ms pour plus de réactivité
+  };
+
+  const handleTouchEnd = () => {
+    if (longPressTimerRef.current) {
+      clearTimeout(longPressTimerRef.current);
+      longPressTimerRef.current = null;
+    }
+  };
+
+  // Handle tap on message to toggle actions on mobile
+  const handleMessageTap = (e: React.MouseEvent, msgId: string) => {
+    // Check if it's a touch device
+    if (window.matchMedia('(hover: none)').matches) {
+      e.preventDefault();
+      setSelectedMsgId(selectedMsgId === msgId ? null : msgId);
+    }
+  };
+
+  // Close actions when tapping outside
+  const handleContainerClick = (e: React.MouseEvent) => {
+    const target = e.target as HTMLElement;
+    // Si on clique sur le container mais pas sur un message ou une action
+    if (!target.closest('[data-message-bubble]') && !target.closest('[data-action-button]')) {
+      setSelectedMsgId(null);
+    }
+  };
+
   if (!conversation) {
     return (
       <div className="flex-1 flex items-center justify-center bg-gradient-to-br from-orange-50 to-amber-50">
@@ -568,7 +735,11 @@ export default function ChatWindow({ conversation, onSendMessage, sendTyping, on
       </div>
 
       {/* Messages - scrollable area */}
-      <div className="flex-1 overflow-y-auto overscroll-contain p-2 md:p-4 lg:p-6 space-y-2 md:space-y-3 bg-gradient-to-br from-orange-50/30 to-amber-50/30" style={{ WebkitOverflowScrolling: 'touch' }}>
+      <div 
+        className="flex-1 overflow-y-auto overscroll-contain p-2 md:p-4 lg:p-6 space-y-2 md:space-y-3 bg-gradient-to-br from-orange-50/30 to-amber-50/30" 
+        style={{ WebkitOverflowScrolling: 'touch' }}
+        onClick={handleContainerClick}
+      >
         {loading ? (
           <div className="flex justify-center items-center h-full">
             <div className="text-gray-500">⏳ Chargement des messages...</div>
@@ -586,6 +757,7 @@ export default function ChatWindow({ conversation, onSendMessage, sendTyping, on
             const displayContent = isClient ? getDisplayContent(msg, api.getCurrentUserId()) : msg.content;
             const previousMsg = index > 0 ? messages[index - 1] : null;
             const showDateSeparator = shouldShowDateSeparator(msg, previousMsg);
+            const showActions = selectedMsgId === msg.id;
             
             return (
               <div key={msg.id}>
@@ -600,8 +772,39 @@ export default function ChatWindow({ conversation, onSendMessage, sendTyping, on
                   </div>
                 )}
                 
-                {/* Message */}
-                <div className={`flex ${isOwn ? 'justify-end' : 'justify-start'}`}>
+                {/* Message avec actions */}
+                <div 
+                  className={`group flex ${isOwn ? 'justify-end' : 'justify-start'} relative`}
+                  onMouseEnter={() => setSelectedMsgId(msg.id)}
+                  onMouseLeave={() => setSelectedMsgId(null)}
+                  onTouchStart={() => handleTouchStart(msg.id)}
+                  onTouchEnd={handleTouchEnd}
+                  onClick={(e) => handleMessageTap(e, msg.id)}
+                  data-message-bubble="true"
+                >
+                  {/* Actions à gauche du message (si message propre) */}
+                  {isOwn && showActions && (
+                    <div className={`flex items-center gap-1 mr-2 transition-opacity ${showActions ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}`} data-action-button="true">
+                      <button onClick={(e) => { e.stopPropagation(); handleReply(msg); }} className="p-1.5 bg-white rounded-full shadow hover:bg-orange-100 active:bg-orange-200" title="Répondre">
+                        <svg className="w-4 h-4 text-orange-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 10h10a8 8 0 018 8v2M3 10l6 6m-6-6l6-6" />
+                        </svg>
+                      </button>
+                      {msg.message_type === 'text' && (
+                        <button onClick={(e) => { e.stopPropagation(); handleEdit(msg); }} className="p-1.5 bg-white rounded-full shadow hover:bg-blue-100 active:bg-blue-200" title="Modifier">
+                          <svg className="w-4 h-4 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+                          </svg>
+                        </button>
+                      )}
+                      <button onClick={(e) => { e.stopPropagation(); handleDelete(msg); }} className="p-1.5 bg-white rounded-full shadow hover:bg-red-100 active:bg-red-200" title="Supprimer">
+                        <svg className="w-4 h-4 text-red-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                        </svg>
+                      </button>
+                    </div>
+                  )}
+
                   <div
                     className={`max-w-[85%] md:max-w-[70%] rounded-2xl ${
                       msg.message_type === 'text' 
@@ -615,6 +818,18 @@ export default function ChatWindow({ conversation, onSendMessage, sendTyping, on
                       : 'bg-white border border-orange-100 text-gray-900'
                   }`}
                 >
+                  {/* Message cité (reply_to) */}
+                  {msg.reply_to_id && msg.reply_to && (
+                    <div className={`text-xs mb-1 p-2 rounded ${isOwn ? 'bg-orange-600/30' : 'bg-gray-100'} border-l-2 ${isOwn ? 'border-white/50' : 'border-orange-400'}`}>
+                      <p className={`truncate ${isOwn ? 'text-white/80' : 'text-gray-600'}`}>
+                        {msg.reply_to.message_type === 'text' 
+                          ? tryDecrypt(msg.reply_to.content, msg.reply_to.sender_id === api.getCurrentUserId())
+                          : msg.reply_to.message_type === 'voice' 
+                            ? '🎤 Message vocal'
+                            : '📷 Image'}
+                      </p>
+                    </div>
+                  )}
                   {msg.message_type === 'text' ? (
                     <p className="break-words">{decodeHtmlEntities(displayContent)}</p>
                   ) : msg.message_type === 'voice' ? (
@@ -662,6 +877,11 @@ export default function ChatWindow({ conversation, onSendMessage, sendTyping, on
                         minute: '2-digit',
                       })}
                     </p>
+                    {msg.is_edited && (
+                      <span className={`text-xs ${isOwn ? 'text-orange-100' : 'text-gray-400'}`}>
+                        (modifié)
+                      </span>
+                    )}
                     {/* Double check pour les messages envoyés */}
                     {isOwn && (
                       <span className={`text-xs ${msg.is_read ? 'text-blue-300' : 'text-orange-100'}`}>
@@ -670,6 +890,17 @@ export default function ChatWindow({ conversation, onSendMessage, sendTyping, on
                     )}
                   </div>
                 </div>
+
+                  {/* Actions à droite du message (si message reçu) */}
+                  {!isOwn && showActions && (
+                    <div className={`flex items-center gap-1 ml-2 transition-opacity ${showActions ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}`} data-action-button="true">
+                      <button onClick={(e) => { e.stopPropagation(); handleReply(msg); }} className="p-1.5 bg-white rounded-full shadow hover:bg-orange-100 active:bg-orange-200" title="Répondre">
+                        <svg className="w-4 h-4 text-orange-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 10h10a8 8 0 018 8v2M3 10l6 6m-6-6l6-6" />
+                        </svg>
+                      </button>
+                    </div>
+                  )}
               </div>
             </div>
             );
@@ -687,6 +918,52 @@ export default function ChatWindow({ conversation, onSendMessage, sendTyping, on
             <div className="w-2 h-2 bg-orange-400 rounded-full animate-bounce" style={{ animationDelay: '300ms' }}></div>
           </div>
           <span>{otherParticipant?.user?.display_name || otherParticipant?.user?.username} est en train d'écrire...</span>
+        </div>
+      )}
+
+      {/* Barre de réponse (si on répond à un message) */}
+      {replyTo && (
+        <div className="bg-orange-50 border-t border-orange-200 px-4 py-2 flex items-center gap-2">
+          <div className="flex-1 border-l-4 border-orange-400 pl-3">
+            <p className="text-xs text-orange-600 font-medium">↩️ Répondre à</p>
+            <p className="text-sm text-gray-700 truncate">
+              {isClient ? getDisplayContent(replyTo, api.getCurrentUserId()) : replyTo.content}
+            </p>
+          </div>
+          <button onClick={handleCancelReply} className="p-1 text-gray-400 hover:text-gray-600">
+            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
+        </div>
+      )}
+
+      {/* Barre d'édition (si on modifie un message) */}
+      {editingMsg && (
+        <div className="bg-blue-50 border-t border-blue-200 px-4 py-2">
+          <div className="flex items-center gap-2 mb-2">
+            <span className="text-xs text-blue-600 font-medium">✏️ Modification du message</span>
+            <button onClick={handleCancelEdit} className="ml-auto p-1 text-gray-400 hover:text-gray-600">
+              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </button>
+          </div>
+          <div className="flex gap-2">
+            <input
+              type="text"
+              value={editText}
+              onChange={(e) => setEditText(e.target.value)}
+              className="flex-1 px-3 py-2 border border-blue-200 rounded-2xl focus:ring-2 focus:ring-blue-400 focus:border-transparent outline-none text-gray-900"
+              autoFocus
+            />
+            <button
+              onClick={handleSaveEdit}
+              className="px-4 py-2 bg-blue-500 text-white rounded-2xl hover:bg-blue-600 transition"
+            >
+              Sauvegarder
+            </button>
+          </div>
         </div>
       )}
 
@@ -725,7 +1002,7 @@ export default function ChatWindow({ conversation, onSendMessage, sendTyping, on
               </svg>
             </button>
           </div>
-        ) : (
+        ) : editingMsg ? null : (
           // Interface normale de message
           <div className="flex gap-1.5 md:gap-2 lg:gap-3 items-center">
             {/* Bouton Image */}

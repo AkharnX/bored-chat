@@ -52,13 +52,16 @@ export interface Message {
   media_type?: string;
   media_size?: number;
   is_read: boolean;
+  is_edited?: boolean;
+  reply_to_id?: string;
+  reply_to?: Message;
   sender?: User;
   created_at: string;
   updated_at: string;
 }
 
 export interface WSMessage {
-  type: 'message' | 'typing' | 'read' | 'user_status' | 'ping' | 'pong';
+  type: 'message' | 'typing' | 'read' | 'user_status' | 'ping' | 'pong' | 'message_edited' | 'message_deleted';
   conversation_id?: string;
   sender_id: string;
   recipient_id?: string;

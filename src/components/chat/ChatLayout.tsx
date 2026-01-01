@@ -18,16 +18,11 @@ export default function ChatLayout() {
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [selectedConversation, setSelectedConversation] = useState<Conversation | null>(null);
   const [showFriends, setShowFriends] = useState(false);
-  const { connected, sendTyping, onNewMessage, onTyping, onRead } = useWebSocket();
+  const { connected, sendTyping, onNewMessage, onTyping, onRead, onMessageEdited, onMessageDeleted } = useWebSocket();
   const { permission, requestPermission, showNotification, isSupported } = useNotifications();
   const [notificationRequested, setNotificationRequested] = useState(false);
   const conversationsRef = useRef<Conversation[]>([]);
   const selectedConversationIdRef = useRef<string | null>(null);
-
-  // Debug log for WebSocket connection
-  useEffect(() => {
-    console.log('[ChatLayout] WebSocket connected:', connected, 'sendTyping exists:', !!sendTyping);
-  }, [connected, sendTyping]);
 
   // Fonction pour jouer un son de notification programmatique
   const playNotificationSound = useCallback(() => {
@@ -72,16 +67,15 @@ export default function ChatLayout() {
     selectedConversationIdRef.current = selectedConversation?.id || null;
   }, [selectedConversation?.id]);
 
-  // Demander la permission pour les notifications au montage
-  useEffect(() => {
-    if (isSupported && permission === 'default' && !notificationRequested) {
-      setNotificationRequested(true);
-      // Demander après un petit délai pour ne pas être trop intrusif
-      setTimeout(() => {
-        requestPermission();
-      }, 2000);
-    }
-  }, [isSupported, permission, notificationRequested, requestPermission]);
+  // Ne plus demander automatiquement - géré dans les paramètres
+  // useEffect supprimé
+
+  // Vérifier si les notifications sont activées dans les paramètres
+  const areNotificationsEnabled = useCallback(() => {
+    if (typeof window === 'undefined') return false;
+    const saved = localStorage.getItem('notifications_enabled');
+    return saved !== 'false'; // Par défaut true si non défini
+  }, []);
 
   useEffect(() => {
     if (!onNewMessage) return;
@@ -104,7 +98,8 @@ export default function ChatLayout() {
         ? tryDecrypt(msg.content, false)
         : '📷 Image';
 
-      if (permission === 'granted') {
+      // Vérifier si les notifications sont activées dans les paramètres
+      if (permission === 'granted' && areNotificationsEnabled()) {
         showNotification(`💬 ${senderName}`, {
           body: decryptedBody,
           tag: msg.conversation_id,
@@ -112,12 +107,32 @@ export default function ChatLayout() {
         });
       }
 
-      // Jouer le son de notification
-      playNotificationSound();
+      // Jouer le son de notification seulement si activé
+      if (areNotificationsEnabled()) {
+        playNotificationSound();
+      }
       
       loadConversations();
     });
-  }, [onNewMessage, user?.id, permission, showNotification, playNotificationSound]);
+  }, [onNewMessage, user?.id, permission, showNotification, playNotificationSound, areNotificationsEnabled]);
+
+  // Handle message edited - refresh conversations to update preview
+  useEffect(() => {
+    if (!onMessageEdited) return;
+    
+    onMessageEdited((msg: Message) => {
+      loadConversations();
+    });
+  }, [onMessageEdited]);
+
+  // Handle message deleted - refresh conversations to update preview
+  useEffect(() => {
+    if (!onMessageDeleted) return;
+    
+    onMessageDeleted((messageId: string, conversationId: string) => {
+      loadConversations();
+    });
+  }, [onMessageDeleted]);
 
   const loadConversations = useCallback(async () => {
     try {
@@ -255,6 +270,8 @@ export default function ChatLayout() {
             onNewMessage={onNewMessage}
             onTyping={onTyping}
             onRead={onRead}
+            onMessageEdited={onMessageEdited}
+            onMessageDeleted={onMessageDeleted}
             onBack={() => setSelectedConversation(null)}
           />
         ) : (
